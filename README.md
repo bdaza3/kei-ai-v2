@@ -1,14 +1,4 @@
-CS 423 Group 4 Project
-NUI Voice Controlled Chess Game
-Abrar Makki, Brian Daza, Hau Tran, Shimra Hazmi
-
-imports and documentation:
-- frontend chessboard and pieces found here:
-https://chessboardjs.com/#start
-
-AI was utilized to help set up Whisper API in this project.
-
----
+Kei.AI V2
 
 ## Setup & Running
 
@@ -19,17 +9,12 @@ AI was utilized to help set up Whisper API in this project.
 - Node.js
 - ffmpeg — install with `winget install ffmpeg`, then add it to your PATH windows environment variables, you can also install ffmpeg online.
 - Optional to have python virtual environment, but used in this to do list.
-### 1. Clone the repo
-```bash
-git clone https://github.com/ShimraHazmi/423ChessNUIGame.git
-cd 423ChessNUIGame
-```
-### 2. Install Node dependencies
+### 1. Install Node dependencies
 ```bash
 npm install
 ```
 
-### 3. Set up Python environment
+### 2. Set up Python environment
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
@@ -40,7 +25,7 @@ pip install flask
 pip install flask_cors
 ```
 
-### 4. Start the Whisper server (Terminal 1)
+### 3. Start the Whisper server (Terminal 1)
 ```bash
 .venv\Scripts\activate # Or download python extension on vscode and run python create environment
 python whisper_server.py
@@ -48,22 +33,12 @@ python whisper_server.py
 First run will download the Whisper `base` model (~145 MB). Wait for:
 `Whisper model ready.`
 
-### 5. Start the frontend (Terminal 2)
+### 4. Start the frontend (Terminal 2)
 ```bash
 npx serve .
 ```
 
-### 6. Start the stockfish server (Terminal 3)
-```bash
-python stockfish_server.py
-```
-
-### 7. Open the app
+### 5. Open the app
 Go to `http://localhost:3000` in Chrome or Edge. Chromium Browser prefered. Sometimes, if port is taken already, it will use a different port which you will see in the terminal.
 
 ### Voice Commands
-- "Start game" — start the game & timer
-- "Clear board" — clear all pieces
-- "Pause" — pause the timer
-- "Resume" — resume the timer
-- "Reset" — reset the game & timer

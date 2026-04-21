@@ -3,5 +3,5 @@ node_modules/
 dist/
 src/config.js
 .venv/
-stockfish/*
-!stockfish/readme.txt
+__pycache__/
+*.pyc

@@ -1,144 +1,33 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-  
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Speech Controlled Chess Game</title>
-
-    <title> Voice Controlled Chess Game</title>
-  <link rel="stylesheet" href="./src/chessboardjs-1.0.0/css/chessboard-1.0.0.min.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Voice Recorder</title>
   <link rel="stylesheet" href="./styles.css">
-
 </head>
-
 <body>
-    <div class="layout">
-      <div class="panel">
-        <h1>Speech Controlled Chess Game </h1>
-        <p class="subtitle">A chess game controlled by voice commands!</p>
+  <div class="layout">
+    <div class="panel" style="max-width:720px;">
+      <h1>Voice Recorder</h1>
+      <p class="subtitle">Record audio and transcribe using the local Whisper server.</p>
 
-        <div class="button-group">
-          <button id="speechBtn" class="nav-btn">Access Speech Here</button>
-        </div>
-
-        <!-- SPEECH -->
-        <div id="speechSection" class="section">
-          <div class="record-btns">
-            <button id="recordBtn">Start Recording</button>
-          </div>
-          <div id="speechOutput">Press Enter (or click Start Recording), speak, then press Enter again to transcribe.</div>
-          <div class="voice-commands-list">
-            <p><strong>Available commands:</strong></p>
-            <ul>
-              <li>"Start game" – start the game &amp; timer</li>
-              <li>"Quit game" – clear all pieces and stop the timer</li>
-              <li>"Pause" – pause the timer</li>
-              <li>"Resume" – resume the timer</li>
-              <li>"Reset" – reset the game &amp; timer</li>
-              <li>"E2 to E4" – move a piece</li>
-            </ul>
-            <p class="info-text">Use Enter to start/stop recording and send audio for transcription.</p>
-          </div>
-        </div>
+      <div class="record-btns">
+        <button id="recordBtn">Start Recording</button>
       </div>
 
-      <div class="panel">
-        <div class="menu-header">
-          <button id="menuBtn" class="menu-btn">Menu ⋮</button>
-        </div>
-        <div class="board-container">
-          <div id="board" style="width: 400px"></div>
-          <!-- Menu Popup -->
-          <div id="menuPopup" class="menu-popup hidden">
-            <button id="pauseMenuBtn" class="menu-option">⏸ Pause</button>
-            <button id="resumeMenuBtn" class="menu-option">▶ Resume</button>
-            <button id="resetMenuBtn" class="menu-option">↻ Reset</button>
-          </div>
-        </div>
+      <div id="speechOutput">Press Enter (or click Start Recording), speak, then press Enter again to transcribe.</div>
 
-        <!-- Timer (hidden until game starts) -->
-        <div id="timerContainer" class="timer-container hidden">
-          <div class="timer-player">
-            <span class="timer-label">⬜ White</span>
-            <span id="whiteTimer" class="timer-display">00:00</span>
-          </div>
-          <div class="timer-status" id="timerStatus">Game in progress</div>
-          <div class="timer-player">
-            <span class="timer-label">⬛ Black</span>
-            <span id="blackTimer" class="timer-display">00:00</span>
-          </div>
-        </div>
-
-        <div class="start-clear-btns">
-          <button class="start-btn">Start Game</button>
-          <button class="clear-btn">Quit Game</button>
-          <button id="tipsBtn" class="tips-btn">Tips</button>
-        </div>
+      <div class="voice-commands-list" style="margin-top:18px;">
+        <p><strong>Notes:</strong></p>
+        <ul>
+          <li>Click the button or press <strong>Enter</strong> to start/stop recording.</li>
+          <li>Transcription sent to <code>http://localhost:5000/transcribe</code> by default.</li>
+        </ul>
       </div>
     </div>
+  </div>
 
-    <!-- Winning Screen Popup -->
-    <div id="winningPopup" class="winning-popup hidden">
-      <div class="winning-content">
-        <h2 id="winningTitle" class="winning-title">Checkmate!</h2>
-        <p id="winningMessage" class="winning-message">White wins!</p>
-        <div class="winning-buttons">
-          <button id="playAgainBtn" class="play-again-btn">Play Again</button>
-          <button id="closePopupBtn" class="close-popup-btn">Close</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Tips Popup -->
-    <div id="tipsPopup" class="winning-popup hidden">
-      <div class="winning-content tips-content">
-        <h2 class="winning-title">How to Play</h2>
-        <div class="tips-body">
-          <p>This is a 2-player chess game. You can play against someone else or use both sides yourself.</p>
-          <p>Move pieces by dragging them on the board or by speaking a move such as “e2 to e4”.</p>
-          <p>Press Enter to start recording your voice command, then press Enter again to stop recording and send it for transcription.</p>
-          <p>Ask for a hint by saying “hint” or “I need help”. If you want to play the suggested move immediately, say “take hint”.</p>
-          <p>Use voice commands like “start game”, “quit game”, “pause”, “resume”, and “reset” to control the match.</p>
-        </div>
-        <div class="winning-buttons">
-          <button id="closeTipsBtn" class="close-popup-btn">Close</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Global helper to switch sections -->
-    <script>
-        const speechBtn = document.getElementById("speechBtn");
-
-        const speechSection = document.getElementById("speechSection");
-
-        const navButtons = document.querySelectorAll('.nav-btn');
-
-        function showSection(section, activeBtn) {
-            // Hide all sections
-            [speechSection].forEach(s => {
-                s.classList.remove('active');
-            });
-            
-            // Remove active class from all buttons
-            navButtons.forEach(btn => btn.classList.remove('active'));
-            
-            // Show selected section and highlight button
-            section.classList.add('active');
-            activeBtn.classList.add('active');
-        }
-
-        speechBtn.onclick = () => showSection(speechSection, speechBtn);
-    </script>
-
-
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
-    <script src="./src/chessboardjs-1.0.0/js/chessboard-1.0.0.min.js"></script>
-    <script type="module" src="./src/main.js"></script>
-
-
+  <script type="module" src="./src/speech.js"></script>
 </body>
 </html>

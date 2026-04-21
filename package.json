@@ -1,5 +1,5 @@
 {
-  "name": "chess-nui",
+  "name": "voice-recorder",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
@@ -10,7 +10,5 @@
   "author": "",
   "license": "ISC",
   "description": "",
-  "dependencies": {
-    "chess.js": "^1.4.0"
-  }
+  "dependencies": {}
 }
