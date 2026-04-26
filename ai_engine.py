@@ -37,6 +37,22 @@ import requests
 import json
 
 
+def _normalize_openrouter_model(model_name: Optional[str]) -> str:
+    raw = (model_name or "").strip()
+    if not raw:
+        return "google/gemma-3-4b-it:free"
+
+    aliases = {
+        "gemma3-4b": "google/gemma-3-4b-it:free",
+        "gemma-3-4b": "google/gemma-3-4b-it:free",
+        "gemma3": "google/gemma-3-4b-it:free",
+        "gemma3-12b": "google/gemma-3-12b-it:free",
+        "gemma-3-12b": "google/gemma-3-12b-it:free",
+    }
+    lowered = raw.lower()
+    return aliases.get(lowered, raw)
+
+
 def _ollama_generate(prompt: str, model: str = "llama3", timeout: float = 3.0) -> Optional[str]:
     url = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
     try:
@@ -125,7 +141,9 @@ def _openrouter_generate(prompt: str, model: Optional[str] = None, timeout: floa
         "https://api.openrouter.ai/v1/chat/completions",
         "https://openrouter.ai/api/v1/chat/completions",
     ]
-    model_name = model or os.environ.get("OPENROUTER_MODEL", os.environ.get("YUUKA_OPENROUTER_MODEL", "gemma3-4b"))
+    model_name = _normalize_openrouter_model(
+        model or os.environ.get("OPENROUTER_MODEL", os.environ.get("YUUKA_OPENROUTER_MODEL", "google/gemma-3-4b-it:free"))
+    )
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
@@ -211,7 +229,7 @@ def generate_with_openrouter(trigger: str, context: Optional[Dict] = None, *, mo
     context = context or {}
     template = get_template_response(trigger, context)
     prompt = _build_prompt(trigger, context, template)
-    model = model or os.environ.get("OPENROUTER_MODEL", "gemma3-4b")
+    model = _normalize_openrouter_model(model or os.environ.get("OPENROUTER_MODEL", "google/gemma-3-4b-it:free"))
     candidate = _openrouter_generate(prompt, model=model, timeout=timeout)
     if not candidate:
         return None
@@ -262,7 +280,9 @@ def generate_conversation_reply(
 
     # Prefer OpenRouter when enabled
     if enabled_or:
-        model = os.environ.get("OPENROUTER_MODEL", os.environ.get("YUUKA_OPENROUTER_MODEL", "gemma3-4b"))
+        model = _normalize_openrouter_model(
+            os.environ.get("OPENROUTER_MODEL", os.environ.get("YUUKA_OPENROUTER_MODEL", "google/gemma-3-4b-it:free"))
+        )
         candidate = _openrouter_generate(prompt, model=model, timeout=timeout)
         if candidate:
             return candidate.strip()
@@ -275,6 +295,28 @@ def generate_conversation_reply(
             return candidate.strip()
 
     return fallback
+
+
+def generate_openrouter_conversation_reply(
+    user_text: str,
+    context: Optional[Dict] = None,
+    *,
+    model: Optional[str] = None,
+    timeout: float = 8.0,
+) -> Optional[str]:
+    """Generate a conversation reply using OpenRouter only.
+
+    Returns None when OpenRouter is not configured or the request fails.
+    """
+    context = context or {}
+    prompt = _build_conversation_prompt(user_text, context)
+    model_name = _normalize_openrouter_model(
+        model or os.environ.get("OPENROUTER_MODEL", os.environ.get("YUUKA_OPENROUTER_MODEL", "google/gemma-3-4b-it:free"))
+    )
+    candidate = _openrouter_generate(prompt, model=model_name, timeout=timeout)
+    if candidate:
+        return candidate.strip()
+    return None
 
 
 def generate_response(trigger: str, context: Optional[Dict] = None, *, use_ollama: bool = True) -> str:

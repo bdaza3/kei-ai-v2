@@ -1,7 +1,9 @@
 const recordBtn = document.getElementById("recordBtn");
 const speechOutput = document.getElementById("speechOutput");
+const llmOutput = document.getElementById("llmOutput");
 
 const TRANSCRIBE_URL = "http://localhost:5000/transcribe";
+const CHAT_URL = "http://localhost:5000/chat";
 
 let mediaRecorder = null;
 let audioChunks = [];
@@ -28,6 +30,29 @@ async function transcribeWithWhisper(audioBlob) {
     return result.text;
   } catch (err) {
     return { error: "Could not transcribe audio. Make sure the Whisper server is running." };
+  }
+}
+
+async function askGemma(transcriptText) {
+  try {
+    const response = await fetch(CHAT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: transcriptText }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      const message = data && data.error ? data.error : "LLM request failed";
+      return { error: message };
+    }
+
+    if (data && typeof data.reply === "string") {
+      return { reply: data.reply.trim(), model: data.model || "Gemma 3" };
+    }
+    return { error: "Invalid LLM response format" };
+  } catch (err) {
+    return { error: "Could not reach OpenRouter chat endpoint. Make sure whisper_server.py is running." };
   }
 }
 
@@ -78,6 +103,23 @@ async function startRecording() {
           speechOutput.textContent = `You said: "${cleaned}"`;
           speechOutput.style.color = "#28a745";
         }
+
+        if (llmOutput) {
+          llmOutput.textContent = "Gemma 3 is thinking...";
+          llmOutput.style.color = "#333";
+        }
+
+        const llmResult = await askGemma(cleaned);
+        if (llmOutput) {
+          if (llmResult.reply) {
+            llmOutput.textContent = `Gemma 3: ${llmResult.reply}`;
+            llmOutput.style.color = "#1f3c88";
+          } else {
+            llmOutput.textContent = `Gemma 3 error: ${llmResult.error || "Unknown error"}`;
+            llmOutput.style.color = "#dc3545";
+          }
+        }
+
         transcriptHandlers.forEach(h => {
           try { h(cleaned); } catch (e) { console.error(e); }
         });
@@ -86,11 +128,13 @@ async function startRecording() {
           speechOutput.textContent = `Transcription failed: ${transcript.error}`;
           speechOutput.style.color = "#dc3545";
         }
+        if (llmOutput) llmOutput.textContent = "";
       } else {
         if (speechOutput) {
           speechOutput.textContent = "Transcription failed. Try again.";
           speechOutput.style.color = "#dc3545";
         }
+        if (llmOutput) llmOutput.textContent = "";
       }
 
       stream.getTracks().forEach(t => t.stop());

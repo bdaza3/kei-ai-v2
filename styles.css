@@ -140,6 +140,19 @@ button:active {
     color: #333;
 }
 
+#llmOutput {
+    margin-top: 12px;
+    padding: 12px 14px;
+    background: #f4f7ff;
+    border-left: 4px solid #1f3c88;
+    border-radius: 8px;
+    color: #1f3c88;
+    font-size: 16px;
+    line-height: 1.5;
+    min-height: 24px;
+    white-space: pre-wrap;
+}
+
 
 canvas {
     border: 2px solid #ccc;

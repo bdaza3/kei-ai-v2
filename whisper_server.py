@@ -6,6 +6,9 @@ from django.views.decorators.csrf import csrf_exempt
 from pathlib import Path
 import mimetypes
 import whisper, tempfile, os, sys
+import json
+
+from ai_engine import generate_openrouter_conversation_reply
 
 settings.configure(
     DEBUG=True,
@@ -19,6 +22,53 @@ model = whisper.load_model("small") # oginally base
 print("Whisper model ready.")
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _strip_wrapped_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and ((value[0] == "'" and value[-1] == "'") or (value[0] == '"' and value[-1] == '"')):
+        return value[1:-1]
+    return value
+
+
+def _load_env_file(env_path: Path) -> None:
+    """Load environment variables from .env if present.
+
+    Supports both standard dotenv `KEY=VALUE` and PowerShell style
+    `$env:KEY='VALUE'` lines.
+    """
+    if not env_path.exists() or not env_path.is_file():
+        return
+
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            if line.startswith("$env:"):
+                # Example: $env:OPENROUTER_API_KEY='sk-...'
+                tail = line[5:]
+                if "=" not in tail:
+                    continue
+                key, value = tail.split("=", 1)
+                key = key.strip()
+                value = _strip_wrapped_quotes(value.split("#", 1)[0].strip())
+                if key and key not in os.environ:
+                    os.environ[key] = value
+                continue
+
+            if "=" in line:
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = _strip_wrapped_quotes(value.split("#", 1)[0].strip())
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception:
+        print("Warning: failed to load .env file")
+
+
+_load_env_file(PROJECT_ROOT / ".env")
 
 @csrf_exempt
 def transcribe(request):
@@ -67,6 +117,55 @@ def transcribe(request):
     response["Access-Control-Allow-Headers"] = "Content-Type"
     return response
 
+
+@csrf_exempt
+def chat(request):
+    if request.method == "OPTIONS":
+        response = JsonResponse({})
+    elif request.method == "POST":
+        text = ""
+        try:
+            if request.body:
+                payload = json.loads(request.body.decode("utf-8"))
+                if isinstance(payload, dict):
+                    text = str(payload.get("text") or "").strip()
+        except Exception:
+            text = ""
+
+        if not text:
+            response = JsonResponse({"error": "No text provided"}, status=400)
+        else:
+            model_name = os.environ.get("OPENROUTER_MODEL", "google/gemma-3-4b-it:free")
+            try:
+                timeout = float(os.environ.get("OPENROUTER_TIMEOUT", "12"))
+            except Exception:
+                timeout = 12.0
+
+            reply = generate_openrouter_conversation_reply(
+                text,
+                context={"source": "web_voice_input"},
+                model=model_name,
+                timeout=timeout,
+            )
+
+            if reply:
+                response = JsonResponse({"reply": reply, "model": model_name})
+            else:
+                response = JsonResponse(
+                    {
+                        "error": "No response from OpenRouter. Verify OPENROUTER_API_KEY/OPENROUTER_MODEL and restart whisper_server.py after env changes.",
+                        "model": model_name,
+                    },
+                    status=503,
+                )
+    else:
+        response = JsonResponse({"error": "Method not allowed"}, status=405)
+
+    response["Access-Control-Allow-Origin"] = "*"
+    response["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    response["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
+
 def _resolve_path(path_fragment):
     target = (PROJECT_ROOT / path_fragment.lstrip("/")).resolve()
     try:
@@ -101,6 +200,7 @@ def serve_frontend(request, path=""):
 
 urlpatterns = [
     path("transcribe", transcribe),
+    path("chat", chat),
     re_path(r"^(?P<path>.*)$", serve_frontend),
 ]
 
