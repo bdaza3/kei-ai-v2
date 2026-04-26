@@ -168,6 +168,7 @@ def _build_bilingual_conversation_prompt(user_text: str, context: Dict) -> str:
         "- The user is Sensei. Do not confuse Sensei with anyone else.\n"
         "- Do not invent tasks, projects, or events. If unknown, say so plainly.\n"
         "- If the user asks who you are or what you are doing, answer clearly and directly, then add one small personality line.\n"
+        "- For identity or current-action questions, give a slightly fuller answer: what you are, what you are doing, and one tsundere remark.\n"
         "Example:\n"
         '{"japanese":"今日は何をしますか？","english":"What will you do today?"}'
     )

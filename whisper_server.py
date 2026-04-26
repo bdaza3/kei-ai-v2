@@ -10,7 +10,7 @@ import json
 import logging
 
 from ai_engine import generate_openrouter_bilingual_reply
-from tts import get_qwen_japanese_tts
+from tts import get_qwen_japanese_tts, get_windows_sapi_tts
 
 settings.configure(
     DEBUG=True,
@@ -157,17 +157,26 @@ def chat(request):
 
                 audio_url = None
                 tts_error = None
+                tts_status = {}
                 if japanese_text:
                     try:
                         tts_engine = get_qwen_japanese_tts()
+                        tts_status = tts_engine.status()
                         wav_path = tts_engine.generate_to_file(japanese_text, GENERATED_AUDIO_DIR)
+                        if wav_path is None:
+                            fallback_engine = get_windows_sapi_tts()
+                            fallback_path = fallback_engine.generate_to_file(japanese_text, GENERATED_AUDIO_DIR)
+                            if fallback_path is not None:
+                                wav_path = fallback_path
+                                tts_status = fallback_engine.status()
+                                tts_status["fallback"] = "windows_sapi"
                         if wav_path is not None:
                             rel = wav_path.relative_to(PROJECT_ROOT).as_posix()
                             audio_url = f"/{rel}"
                         else:
                             tts_error = (
-                                "Japanese TTS did not generate audio. Check YUUKA_ENABLE_QWEN_TTS, "
-                                "QWEN package install, and YUUKA_QWEN_TTS_REF_AUDIO/REF_TEXT in the whisper server environment."
+                                "Japanese TTS did not generate audio. Check Qwen TTS env vars and dependencies, "
+                                "or verify Windows SAPI is available on this machine."
                             )
                     except Exception:
                         logging.exception("Failed generating Qwen3-TTS audio")
@@ -178,6 +187,7 @@ def chat(request):
                     "english": english_text,
                     "audio_url": audio_url,
                     "tts_error": tts_error,
+                    "tts_status": tts_status,
                     "model": model_name,
                 })
             else:

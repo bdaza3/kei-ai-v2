@@ -17,6 +17,19 @@ from typing import Any, Optional
 import numpy as np
 
 
+def _expand_short_text(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return cleaned
+
+    # If the generated line is too short, pad it with a short natural follow-up so the clip is audible.
+    if len(cleaned) < 18:
+        if cleaned.endswith("。"):
+            return cleaned + " もう少し落ち着いて話すから、ちゃんと聞いてください。"
+        return cleaned + "。もう少し落ち着いて話すから、ちゃんと聞いてください。"
+    return cleaned
+
+
 class VoiceVoxTTS:
     def __init__(self, host: str = "127.0.0.1", port: int = 50021, speaker: int = 1) -> None:
         self.host = host
@@ -105,9 +118,23 @@ class QwenJapaneseTTS:
         self._soundfile: Optional[Any] = None
         self._lock = threading.Lock()
         self._cache: dict[str, Path] = {}
+        self.last_status: str = "not_loaded"
+        self.last_error: str = ""
+
+    def status(self) -> dict[str, str]:
+        return {
+            "enabled": str(self.enabled),
+            "loaded": str(self._model is not None and self._voice_prompt is not None),
+            "last_status": self.last_status,
+            "last_error": self.last_error,
+            "model_name": self.model_name,
+            "ref_audio": self.ref_audio,
+        }
 
     def _ensure_loaded(self) -> bool:
         if not self.enabled:
+            self.last_status = "disabled"
+            self.last_error = "YUUKA_ENABLE_QWEN_TTS is not enabled"
             return False
 
         with self._lock:
@@ -119,6 +146,8 @@ class QwenJapaneseTTS:
                 from qwen_tts import Qwen3TTSModel
                 import soundfile as sf
             except Exception:
+                self.last_status = "missing_dependencies"
+                self.last_error = "qwen-tts or soundfile is not installed"
                 logging.exception("Qwen3-TTS dependencies are missing. Install qwen-tts and soundfile.")
                 return False
 
@@ -174,11 +203,15 @@ class QwenJapaneseTTS:
                     )
 
             if not model_loaded:
+                self.last_status = "model_load_failed"
+                self.last_error = str(last_error) if last_error else "Qwen3-TTS model load failed"
                 logging.error("Failed to load Qwen3-TTS model: %s", self.model_name, exc_info=last_error)
                 self._model = None
                 return False
 
             if not self.ref_audio or not self.ref_text:
+                self.last_status = "missing_reference"
+                self.last_error = "YUUKA_QWEN_TTS_REF_AUDIO or YUUKA_QWEN_TTS_REF_TEXT is missing"
                 logging.warning(
                     "Qwen3-TTS ref audio/text not set. Configure YUUKA_QWEN_TTS_REF_AUDIO and YUUKA_QWEN_TTS_REF_TEXT."
                 )
@@ -188,6 +221,8 @@ class QwenJapaneseTTS:
             if not ref_path.is_absolute():
                 ref_path = Path(os.getcwd()) / ref_path
             if not ref_path.exists():
+                self.last_status = "ref_missing"
+                self.last_error = f"reference audio not found: {ref_path}"
                 logging.warning("Qwen3-TTS ref audio file not found: %s", ref_path)
                 return False
 
@@ -197,27 +232,19 @@ class QwenJapaneseTTS:
                     ref_text=self.ref_text,
                 )
             except Exception:
+                self.last_status = "voice_prompt_failed"
+                self.last_error = "failed to create voice clone prompt"
                 logging.exception("Failed to create Qwen3-TTS voice clone prompt")
                 self._voice_prompt = None
                 return False
 
+            self.last_status = "ready"
+            self.last_error = ""
             logging.info("Qwen3-TTS initialized successfully with reusable clone prompt")
             return True
 
     def _text_key(self, text: str) -> str:
         return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
-
-    def _expand_short_text(self, text: str) -> str:
-        cleaned = (text or "").strip()
-        if not cleaned:
-            return cleaned
-
-        # If the model returns a tiny line, add a short natural follow-up so the clip is not just 0-1s.
-        if len(cleaned) < 18:
-            if cleaned.endswith("。"):
-                return cleaned + " もう少し落ち着いて話すから、ちゃんと聞いてください。"
-            return cleaned + "。もう少し落ち着いて話すから、ちゃんと聞いてください。"
-        return cleaned
 
     def generate_to_file(self, text: str, output_dir: Path) -> Optional[Path]:
         text = (text or "").strip()
@@ -226,7 +253,7 @@ class QwenJapaneseTTS:
         if not self._ensure_loaded():
             return None
 
-        text = self._expand_short_text(text)
+        text = _expand_short_text(text)
 
         key = self._text_key(text)
         with self._lock:
@@ -262,6 +289,8 @@ class QwenJapaneseTTS:
                 wav = np.asarray(wavs).reshape(-1)
 
             if wav.size == 0:
+                self.last_status = "empty_audio"
+                self.last_error = "Qwen3-TTS returned empty audio"
                 logging.warning("Qwen3-TTS produced empty audio for text: %s", text)
                 return None
 
@@ -269,14 +298,122 @@ class QwenJapaneseTTS:
             self._soundfile.write(str(out_path), wav, sample_rate, format="WAV", subtype="PCM_16")
             with self._lock:
                 self._cache[key] = out_path
+            self.last_status = "generated"
+            self.last_error = ""
             return out_path
         except Exception:
+            self.last_status = "generation_failed"
+            self.last_error = "Qwen3-TTS generation failed"
             logging.exception("Qwen3-TTS generation failed")
+            return None
+
+
+class WindowsSapiTTS:
+    """Windows fallback TTS that writes a WAV file without any extra Python packages."""
+
+    def __init__(self) -> None:
+        self._cache: dict[str, Path] = {}
+        self._lock = threading.Lock()
+        self.last_status: str = "not_loaded"
+        self.last_error: str = ""
+
+    def status(self) -> dict[str, str]:
+        return {
+            "enabled": "true",
+            "loaded": "true" if os.name == "nt" else "false",
+            "last_status": self.last_status,
+            "last_error": self.last_error,
+            "model_name": "windows-sapi-fallback",
+            "ref_audio": "",
+        }
+
+    def _text_key(self, text: str) -> str:
+        return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+    def generate_to_file(self, text: str, output_dir: Path) -> Optional[Path]:
+        text = _expand_short_text(text)
+        if not text:
+            return None
+        if os.name != "nt":
+            self.last_status = "unsupported_platform"
+            self.last_error = "Windows fallback TTS is only available on Windows"
+            return None
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        key = self._text_key(text)
+        out_path = output_dir / f"windows_sapi_{key}.wav"
+
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached and cached.exists():
+                self.last_status = "cached"
+                self.last_error = ""
+                return cached
+
+        if out_path.exists():
+            with self._lock:
+                self._cache[key] = out_path
+            self.last_status = "cached"
+            self.last_error = ""
+            return out_path
+
+        ps_text = text.replace("'", "''")
+        ps_path = str(out_path).replace("'", "''")
+        script = (
+            "$ErrorActionPreference = 'Stop'; "
+            "Add-Type -AssemblyName System.Speech; "
+            "$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            "try { "
+            "$synth.Rate = 0; "
+            "$synth.Volume = 100; "
+            f"$synth.SetOutputToWaveFile('{ps_path}'); "
+            f"$synth.Speak('{ps_text}'); "
+            "} finally { "
+            "$synth.Dispose(); "
+            "}"
+        )
+
+        try:
+            if out_path.exists():
+                try:
+                    out_path.unlink()
+                except Exception:
+                    pass
+
+            completed = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            if completed.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
+                self.last_status = "generation_failed"
+                self.last_error = (completed.stderr or completed.stdout or "Windows TTS generation failed").strip()
+                logging.warning(
+                    "Windows SAPI TTS failed: returncode=%s stderr=%s stdout=%s",
+                    completed.returncode,
+                    completed.stderr,
+                    completed.stdout,
+                )
+                return None
+
+            with self._lock:
+                self._cache[key] = out_path
+            self.last_status = "generated"
+            self.last_error = ""
+            return out_path
+        except Exception:
+            self.last_status = "generation_failed"
+            self.last_error = "Windows TTS generation failed"
+            logging.exception("Windows SAPI TTS generation failed")
             return None
 
 
 _QWEN_TTS_SINGLETON: Optional[QwenJapaneseTTS] = None
 _QWEN_TTS_LOCK = threading.Lock()
+_WINDOWS_TTS_SINGLETON: Optional[WindowsSapiTTS] = None
+_WINDOWS_TTS_LOCK = threading.Lock()
 
 
 def get_qwen_japanese_tts() -> QwenJapaneseTTS:
@@ -285,3 +422,11 @@ def get_qwen_japanese_tts() -> QwenJapaneseTTS:
         if _QWEN_TTS_SINGLETON is None:
             _QWEN_TTS_SINGLETON = QwenJapaneseTTS()
         return _QWEN_TTS_SINGLETON
+
+
+def get_windows_sapi_tts() -> WindowsSapiTTS:
+    global _WINDOWS_TTS_SINGLETON
+    with _WINDOWS_TTS_LOCK:
+        if _WINDOWS_TTS_SINGLETON is None:
+            _WINDOWS_TTS_SINGLETON = WindowsSapiTTS()
+        return _WINDOWS_TTS_SINGLETON
