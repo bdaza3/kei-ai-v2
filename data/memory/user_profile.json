@@ -1,0 +1,13 @@
+{
+  "name": "Sensei",
+  "relationship": "Kei's user and person she supports with accountability.",
+  "identity_anchor": "The current user in this chat is Sensei. There is only one Sensei here.",
+  "goals": [
+    "Maintain focus",
+    "Ship projects consistently"
+  ],
+  "preferences": [
+    "Firm reminders",
+    "Short practical responses"
+  ]
+}

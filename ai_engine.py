@@ -32,9 +32,11 @@ import subprocess
 from typing import Dict, Optional
 
 import dialogue
+from memory import get_memory
 
 import requests
 import json
+import re
 
 
 def _normalize_openrouter_model(model_name: Optional[str]) -> str:
@@ -86,11 +88,19 @@ def _ollama_generate(prompt: str, model: str = "llama3", timeout: float = 3.0) -
 
 def _persona_block() -> str:
     return (
-        "You are Kei Tendou, acting as the user's focus assistant. "
+        "You are Kei Tendou, acting as the user's assistant. "
         "Stay in character. Reply briefly, clearly, and with calm but firm accountability. "
         "Do not mention prompts, instructions, roleplay, or being an AI model. "
-        "Use the desktop activity context to keep the user on task."
     )
+
+
+def _memory_block(user_text: str) -> str:
+    memory = get_memory()
+    bundle = memory.build_prompt_memory(user_text)
+    try:
+        return json.dumps(bundle, ensure_ascii=False)
+    except Exception:
+        return str(bundle)
 
 
 def _build_prompt(trigger: str, context: Dict, template: str) -> str:
@@ -114,10 +124,34 @@ def _build_conversation_prompt(user_text: str, context: Dict) -> str:
         context_json = str(context)
     return (
         f"{_persona_block()}\n\n"
+        f"Character memory (identity, relationship, style examples, short-term, long-term): {_memory_block(user_text)}\n\n"
         f"Desktop context: {context_json}\n"
         f"User said: {user_text}\n\n"
-        "Reply as Kei in 1-3 sentences. If the user seems distracted, steer them back to work."
+        "Reply as Kei in 1-3 sentences. Use the style examples as tone references. "
+        "Keep a tsundere voice: sharp honesty with underlying care. "
+        "If the user seems distracted, steer them back to work. "
+        "Use plain, simple words. Avoid formal words like 'inquire', 'dawdle', 'presume', 'regarding'. "
+        "The user in this chat is Sensei; never treat Sensei as another person. "
+        "If asked who you are or what you are doing, answer only from character memory and current context. "
+        "Do not invent project names, tasks, or events. If unknown, say you do not have that detail yet."
     )
+
+
+def _simplify_wording(text: str) -> str:
+    out = text or ""
+    substitutions = {
+        r"\binquire\b": "ask",
+        r"\binquired\b": "asked",
+        r"\bdawdle\b": "waste time",
+        r"\bpresume\b": "assume",
+        r"\bregarding\b": "about",
+        r"\bclarify\b": "explain",
+        r"\befficiently\b": "well",
+        r"\bimmediately\b": "now",
+    }
+    for pattern, replacement in substitutions.items():
+        out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
+    return out
 
 
 def _openrouter_generate(prompt: str, model: Optional[str] = None, timeout: float = 6.0) -> Optional[str]:
@@ -129,7 +163,6 @@ def _openrouter_generate(prompt: str, model: Optional[str] = None, timeout: floa
     api_key = (
         os.environ.get("GEMMA3_4B_API_KEY")
         or os.environ.get("OPENROUTER_API_KEY")
-        or os.environ.get("YUUKA_OPENROUTER_API_KEY")
     )
     if not api_key:
         logging.debug("OpenRouter API key not configured")
@@ -269,11 +302,13 @@ def generate_conversation_reply(
     timeout: float = 8.0,
 ) -> str:
     context = context or {}
+    memory = get_memory()
     fallback = get_template_response("conversation", context)
     enabled_or = os.environ.get("YUUKA_ENABLE_OPENROUTER", "0").lower() in ("1", "true", "yes")
     enabled_ollama = os.environ.get("YUUKA_ENABLE_OLLAMA", "0").lower() in ("1", "true", "yes")
 
     if not (enabled_or or enabled_ollama):
+        memory.remember_turn(user_text, fallback, context)
         return fallback
 
     prompt = _build_conversation_prompt(user_text, context)
@@ -285,16 +320,22 @@ def generate_conversation_reply(
         )
         candidate = _openrouter_generate(prompt, model=model, timeout=timeout)
         if candidate:
-            return candidate.strip()
+            out = _simplify_wording(candidate.strip())
+            memory.remember_turn(user_text, out, context)
+            return out
 
     # Fallback to Ollama if configured
     if enabled_ollama:
         model = os.environ.get("YUUKA_OLLAMA_MODEL", "llama3")
         candidate = _ollama_generate(prompt, model=model, timeout=timeout)
         if candidate:
-            return candidate.strip()
+            out = _simplify_wording(candidate.strip())
+            memory.remember_turn(user_text, out, context)
+            return out
 
-    return fallback
+    fallback_simple = _simplify_wording(fallback)
+    memory.remember_turn(user_text, fallback_simple, context)
+    return fallback_simple
 
 
 def generate_openrouter_conversation_reply(
@@ -309,13 +350,16 @@ def generate_openrouter_conversation_reply(
     Returns None when OpenRouter is not configured or the request fails.
     """
     context = context or {}
+    memory = get_memory()
     prompt = _build_conversation_prompt(user_text, context)
     model_name = _normalize_openrouter_model(
         model or os.environ.get("OPENROUTER_MODEL", os.environ.get("YUUKA_OPENROUTER_MODEL", "google/gemma-3-4b-it:free"))
     )
     candidate = _openrouter_generate(prompt, model=model_name, timeout=timeout)
     if candidate:
-        return candidate.strip()
+        out = _simplify_wording(candidate.strip())
+        memory.remember_turn(user_text, out, context)
+        return out
     return None
 
 

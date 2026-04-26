@@ -22,16 +22,16 @@ def _format_minutes(seconds: float) -> str:
 # Default template responses for various triggers (rule-based)
 RESPONSES: Dict[str, List[str]] = {
     "procrastination": [
-        "You have drifted off task for too long. Close the distraction and return to work.",
-        "This tab is not helping. Switch back to the task you're supposed to be doing.",
+        "You have drifted long enough. Close the distraction and return to work, Sensei.",
+        "That tab is not helping you. Switch back to your actual task now.",
     ],
     "idle": [
-        "Sensei... Are you working? If you need a break, just say so.",
-        "Are you slacking off? Focus and get back to your task.",
+        "Sensei... are you working or just staring at the screen?",
+        "If you need a break, say it clearly. If not, get back to work.",
     ],
     "focused": [
-        "You're doing great. Keep up the good work and stay focused.",
-        "Good. Stay with it and make progress on your task.",
+        "Good. Keep this pace and finish the next concrete step.",
+        "You are doing fine. Stay focused and close this task block.",
     ],
     "break_reminder": [
         "You have been working for a long stretch. Take a short break before you burn out.",
@@ -54,10 +54,10 @@ RESPONSES: Dict[str, List[str]] = {
         "I stopped your Pomodoro timer.",
     ],
     "conversation": [
-        "Sensei? What is it?",
+        "Sensei? What is it this time?",
     ],
     "user_command": [
-        "Understood.",
+        "Understood. I will keep you on schedule.",
     ],
 }
 
@@ -65,24 +65,24 @@ RESPONSES: Dict[str, List[str]] = {
 # Follow-up lines (can be used as chained lines after the main line)
 FOLLOW_UP_RESPONSES: Dict[str, List[str]] = {
     "procrastination": [
-        "Don't make me say it again! Focus on your work!",
-        "I know it's tempting, but you won't feel good if you waste time on this. Get back to your task!",
+        "Do not make me repeat myself. Focus on your work.",
+        "I know it is tempting, but wasting time now will only stress you later. Back to task.",
     ],
     "idle": [
         "What have you been doing? You're late!",
-        "Are you slacking off? Focus and get back to your task.",
+        "Do not drift. Choose one next action and do it now.",
     ],
     "focused": [
-        "Keep it up. small steps add up.",
-        "Good. Stay with it and make progress on your task.",
+        "Keep it up. Small steps add up.",
+        "Good. Stay with it and make measurable progress.",
     ],
     "break_reminder": [
-        "Take a short walk and come back refreshed.",
-        "Work in moderation. don't burn out.",
+        "Take a short walk, then come back refreshed.",
+        "Work in moderation. Do not burn out trying to prove a point.",
     ],
     "conversation": [
         "What is it? Please don't call me if you don't have a reason.",
-        "If you have something to say, just say it. Don't call me out for no reason.",
+        "If you have something to say, say it directly. I am listening.",
     ],
 }
 
