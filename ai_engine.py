@@ -29,7 +29,7 @@ import logging
 import os
 import random
 import subprocess
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import dialogue
 from memory import get_memory
@@ -137,6 +137,42 @@ def _build_conversation_prompt(user_text: str, context: Dict) -> str:
     )
 
 
+def _build_bilingual_conversation_prompt(user_text: str, context: Dict) -> str:
+    try:
+        context_json = json.dumps(context, ensure_ascii=False)
+    except Exception:
+        context_json = str(context)
+    return (
+        f"{_persona_block()}\n\n"
+        f"Character memory (identity, relationship, style examples, short-term, long-term): {_memory_block(user_text)}\n\n"
+        f"Desktop context: {context_json}\n"
+        f"User said in English: {user_text}\n\n"
+        "You must answer in valid JSON only. No markdown. No extra text.\n"
+        "Return exactly these fields:\n"
+        "{\n"
+        '  "japanese": "natural conversational Japanese for speech",\n'
+        '  "english": "natural English for display"\n'
+        "}\n\n"
+        "Rules:\n"
+        "- Japanese must sound natural, warm, and like a real person talking.\n"
+        "- English must be simple, clear, and feel like a VN line.\n"
+        "- Keep both fields concise, but not flat or robotic.\n"
+        "- Use a little tsundere attitude when it fits.\n"
+        "- Kei can sound a little annoyed, but she should still sound caring.\n"
+        "- Do not use stiff or formal wording.\n"
+        "- Use 2 short sentences when possible. One tiny sentence is too short.\n"
+        "- Give a full answer: identity, current action, or advice, then a small tsundere follow-up.\n"
+        "- Aim for roughly 35 to 70 Japanese characters in the Japanese field when natural.\n"
+        "- The English field should match the Japanese meaning closely and be slightly longer if needed.\n"
+        "- Use simple words only. Avoid formal words like inquire, dawdle, presume, regarding.\n"
+        "- The user is Sensei. Do not confuse Sensei with anyone else.\n"
+        "- Do not invent tasks, projects, or events. If unknown, say so plainly.\n"
+        "- If the user asks who you are or what you are doing, answer clearly and directly, then add one small personality line.\n"
+        "Example:\n"
+        '{"japanese":"今日は何をしますか？","english":"What will you do today?"}'
+    )
+
+
 def _simplify_wording(text: str) -> str:
     out = text or ""
     substitutions = {
@@ -152,6 +188,71 @@ def _simplify_wording(text: str) -> str:
     for pattern, replacement in substitutions.items():
         out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
     return out
+
+
+def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    if not text:
+        return None
+
+    candidate = text.strip()
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start < 0 or end <= start:
+        return None
+
+    snippet = candidate[start : end + 1]
+    try:
+        parsed = json.loads(snippet)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    decoder = json.JSONDecoder()
+    try:
+        parsed, _ = decoder.raw_decode(candidate[start:])
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        return None
+    return None
+
+
+def _normalize_bilingual_payload(payload: Dict[str, Any], raw_text: str = "") -> Dict[str, str]:
+    japanese = str(payload.get("japanese") or payload.get("ja") or payload.get("japanese_text") or "").strip()
+    english = str(payload.get("english") or payload.get("en") or payload.get("english_text") or "").strip()
+    if not english and raw_text:
+        english = raw_text.strip()
+    if not japanese:
+        japanese = str(payload.get("spoken") or payload.get("voice") or "").strip()
+    japanese = _simplify_wording(japanese)
+    english = _simplify_wording(english)
+    return {
+        "japanese": japanese,
+        "english": english,
+    }
+
+
+def _openrouter_generate_json(prompt: str, model: Optional[str] = None, timeout: float = 6.0) -> Optional[Dict[str, str]]:
+    raw = _openrouter_generate(prompt, model=model, timeout=timeout)
+    if not raw:
+        return None
+
+    parsed = _extract_json_object(raw)
+    if parsed:
+        return _normalize_bilingual_payload(parsed, raw_text=raw)
+
+    return {
+        "japanese": "",
+        "english": _simplify_wording(raw.strip()),
+    }
 
 
 def _openrouter_generate(prompt: str, model: Optional[str] = None, timeout: float = 6.0) -> Optional[str]:
@@ -360,6 +461,103 @@ def generate_openrouter_conversation_reply(
         out = _simplify_wording(candidate.strip())
         memory.remember_turn(user_text, out, context)
         return out
+    return None
+
+
+def generate_openrouter_bilingual_reply(
+    user_text: str,
+    context: Optional[Dict] = None,
+    *,
+    model: Optional[str] = None,
+    timeout: float = 8.0,
+) -> Optional[Dict[str, str]]:
+    """Generate one OpenRouter response with Japanese speech text and English display text."""
+    context = context or {}
+    memory = get_memory()
+    prompt = _build_bilingual_conversation_prompt(user_text, context)
+    model_name = _normalize_openrouter_model(
+        model or os.environ.get("OPENROUTER_MODEL", os.environ.get("YUUKA_OPENROUTER_MODEL", "google/gemma-3-4b-it:free"))
+    )
+
+    # Prefer strict JSON mode if the endpoint/model supports it.
+    api_key = os.environ.get("GEMMA3_4B_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        logging.debug("OpenRouter API key not configured")
+        return None
+
+    configured = os.environ.get("OPENROUTER_ENDPOINT")
+    endpoints = [configured] if configured else [
+        "https://api.openrouter.ai/v1/chat/completions",
+        "https://openrouter.ai/api/v1/chat/completions",
+    ]
+
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": "Return only valid JSON with keys japanese and english."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": float(os.environ.get("OPENROUTER_TEMPERATURE", os.environ.get("YUUKA_OPENROUTER_TEMPERATURE", 0.3))),
+        "max_tokens": int(os.environ.get("OPENROUTER_MAX_TOKENS", 256)),
+        "response_format": {"type": "json_object"},
+    }
+
+    last_raw: Optional[str] = None
+    for endpoint in endpoints:
+        if not endpoint:
+            continue
+        logging.info("Attempting OpenRouter bilingual endpoint: %s", endpoint)
+        try:
+            resp = requests.post(endpoint, headers=headers, json=payload, timeout=timeout)
+            if resp.status_code == 429:
+                logging.warning("OpenRouter rate limited on %s; trying next endpoint if available", endpoint)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+
+            raw_text: Optional[str] = None
+            if isinstance(data, dict):
+                choices = data.get("choices")
+                if choices and isinstance(choices, list):
+                    first = choices[0]
+                    if isinstance(first, dict):
+                        msg = first.get("message") or first.get("delta")
+                        if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+                            raw_text = msg["content"]
+
+                if not raw_text:
+                    for key in ("response", "output", "output_text", "text"):
+                        if key in data and isinstance(data[key], str):
+                            raw_text = data[key]
+                            break
+
+            if raw_text:
+                last_raw = raw_text
+                parsed = _extract_json_object(raw_text)
+                if parsed:
+                    normalized = _normalize_bilingual_payload(parsed, raw_text=raw_text)
+                    if normalized["english"] or normalized["japanese"]:
+                        # If the model answered too briefly, keep a little more of the same answer in the English line.
+                        if len(normalized["english"]) < 18 and len(normalized["japanese"]) < 12:
+                            normalized["english"] = normalized["english"] or "I am here, Sensei."
+                            normalized["japanese"] = normalized["japanese"] or "はい、Sensei。"
+                        memory.remember_turn(user_text, normalized.get("english") or normalized.get("japanese") or "", context)
+                        return normalized
+                else:
+                    # Some models ignore JSON mode. Keep the text as English fallback.
+                    fallback = {"japanese": "", "english": _simplify_wording(raw_text.strip())}
+                    memory.remember_turn(user_text, fallback["english"], context)
+                    return fallback
+        except Exception:
+            logging.exception("OpenRouter bilingual request failed for endpoint %s", endpoint)
+            continue
+
+    if last_raw:
+        fallback = {"japanese": "", "english": _simplify_wording(last_raw.strip())}
+        memory.remember_turn(user_text, fallback["english"], context)
+        return fallback
+
     return None
 
 

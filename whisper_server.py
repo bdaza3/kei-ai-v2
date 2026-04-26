@@ -7,8 +7,10 @@ from pathlib import Path
 import mimetypes
 import whisper, tempfile, os, sys
 import json
+import logging
 
-from ai_engine import generate_openrouter_conversation_reply
+from ai_engine import generate_openrouter_bilingual_reply
+from tts import get_qwen_japanese_tts
 
 settings.configure(
     DEBUG=True,
@@ -22,6 +24,7 @@ model = whisper.load_model("small") # oginally base
 print("Whisper model ready.")
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+GENERATED_AUDIO_DIR = PROJECT_ROOT / "generated_audio"
 
 
 def _strip_wrapped_quotes(value: str) -> str:
@@ -141,7 +144,7 @@ def chat(request):
             except Exception:
                 timeout = 12.0
 
-            reply = generate_openrouter_conversation_reply(
+            reply = generate_openrouter_bilingual_reply(
                 text,
                 context={"source": "web_voice_input"},
                 model=model_name,
@@ -149,7 +152,34 @@ def chat(request):
             )
 
             if reply:
-                response = JsonResponse({"reply": reply, "model": model_name})
+                japanese_text = str(reply.get("japanese", "") or "").strip()
+                english_text = str(reply.get("english", "") or "").strip()
+
+                audio_url = None
+                tts_error = None
+                if japanese_text:
+                    try:
+                        tts_engine = get_qwen_japanese_tts()
+                        wav_path = tts_engine.generate_to_file(japanese_text, GENERATED_AUDIO_DIR)
+                        if wav_path is not None:
+                            rel = wav_path.relative_to(PROJECT_ROOT).as_posix()
+                            audio_url = f"/{rel}"
+                        else:
+                            tts_error = (
+                                "Japanese TTS did not generate audio. Check YUUKA_ENABLE_QWEN_TTS, "
+                                "QWEN package install, and YUUKA_QWEN_TTS_REF_AUDIO/REF_TEXT in the whisper server environment."
+                            )
+                    except Exception:
+                        logging.exception("Failed generating Qwen3-TTS audio")
+                        tts_error = "Japanese TTS failed inside the Python backend. Check backend logs for details."
+
+                response = JsonResponse({
+                    "japanese": japanese_text,
+                    "english": english_text,
+                    "audio_url": audio_url,
+                    "tts_error": tts_error,
+                    "model": model_name,
+                })
             else:
                 response = JsonResponse(
                     {

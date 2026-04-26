@@ -3,3 +3,16 @@
 {"ts": 1777175715, "user": "What are you doing?", "assistant": "I am reviewing your schedule for the day. Do not presume to question my actions; it is my responsibility to ensure you remain productive. Begin outlining the immediate steps for Project Nightingale.", "context": {"source": "web_voice_input"}}
 {"ts": 1777175734, "user": "What is the project you just mentioned?", "assistant": "The project is the Schale restructuring proposal. Do not dawdle; I outlined the key points – you were to begin drafting the executive summary. Focus on that, immediately.", "context": {"source": "web_voice_input"}}
 {"ts": 1777175760, "user": "Can you tell me about yourself?", "assistant": "I manage Sensei’s schedule and tasks. It’s a necessary function, and I ensure his work progresses efficiently. Now, are you intending to work or merely inquire about my existence?", "context": {"source": "web_voice_input"}}
+{"ts": 1777183094, "user": "Who are you?", "assistant": "I’m Kei.", "context": {"source": "web_voice_input"}}
+{"ts": 1777183440, "user": "Can you tell me who you are?", "assistant": "{\"japanese\":\"私、ケイです。\",\"english\":\"I’m Kei.”}", "context": {"source": "web_voice_input"}}
+{"ts": 1777183459, "user": "What are you doing?", "assistant": "What have you been doing?", "context": {"source": "web_voice_input"}}
+{"ts": 1777183873, "user": "Can you tell me who you are?", "assistant": "I’m Kei.", "context": {"source": "web_voice_input"}}
+{"ts": 1777184176, "user": "Can you tell me who you are?", "assistant": "I'm Kei.", "context": {"source": "web_voice_input"}}
+{"ts": 1777184318, "user": "Can you tell me what you're doing?", "assistant": "Checking.", "context": {"source": "web_voice_input"}}
+{"ts": 1777184448, "user": "Can you tell me about yourself?", "assistant": "{\"japanese\":\"ただ、お手伝いします。\",\"english\":\"I’m here to help.”}", "context": {"source": "web_voice_input"}}
+{"ts": 1777184511, "user": "Can you tell me who you are?", "assistant": "I'm Kei.", "context": {"source": "web_voice_input"}}
+{"ts": 1777184738, "user": "Can you tell me who you are?", "assistant": "{\"japanese\": \"私、担当の秘書です。あなたをサポートするだけ。\", \"english\": \"I’m your assistant. I’m just here to help you.”}", "context": {"source": "web_voice_input"}}
+{"ts": 1777184812, "user": "Are you okay?", "assistant": "I’m fine. Don’t bother me with unnecessary concern.", "context": {"source": "web_voice_input"}}
+{"ts": 1777184881, "user": "Can you help me with my work?", "assistant": "What do you need help with?", "context": {"source": "web_voice_input"}}
+{"ts": 1777185171, "user": "Can you tell me about yourself?", "assistant": "{\"japanese\":\"私は、先生の秘書として、仕事をサポートしています。少しばかり面倒くさいかもしれませんが、先生の役に立ちたいんです。\",\"english\":\"I’m assisting you, Sensei, as your secretary. It’s a little bothersome, but I want to be helpful.”}", "context": {"source": "web_voice_input"}}
+{"ts": 1777185227, "user": "What do you know about me?", "assistant": "{\"japanese\":\"先生は、プロジェクトの進捗を管理しているだけです。\",\"english\":\"I’m just managing your project progress. Don’t look at me like that.”}", "context": {"source": "web_voice_input"}}

@@ -4,11 +4,13 @@ const llmOutput = document.getElementById("llmOutput");
 
 const TRANSCRIBE_URL = "http://localhost:5000/transcribe";
 const CHAT_URL = "http://localhost:5000/chat";
+const BACKEND_BASE_URL = new URL(CHAT_URL).origin;
 
 let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
 let isTranscribing = false;
+let currentAudio = null;
 
 const transcriptHandlers = [];
 export function onTranscript(handler) {
@@ -47,8 +49,14 @@ async function askGemma(transcriptText) {
       return { error: message };
     }
 
-    if (data && typeof data.reply === "string") {
-      return { reply: data.reply.trim(), model: data.model || "Gemma 3" };
+    if (data && (typeof data.english === "string" || typeof data.japanese === "string")) {
+      return {
+        japanese: typeof data.japanese === "string" ? data.japanese.trim() : "",
+        english: typeof data.english === "string" ? data.english.trim() : "",
+        audioUrl: typeof data.audio_url === "string" ? data.audio_url.trim() : "",
+        ttsError: typeof data.tts_error === "string" ? data.tts_error.trim() : "",
+        model: data.model || "Gemma 3",
+      };
     }
     return { error: "Invalid LLM response format" };
   } catch (err) {
@@ -111,9 +119,31 @@ async function startRecording() {
 
         const llmResult = await askGemma(cleaned);
         if (llmOutput) {
-          if (llmResult.reply) {
-            llmOutput.textContent = `Gemma 3: ${llmResult.reply}`;
+          if (llmResult.english) {
+            llmOutput.textContent = `Gemma 3: ${llmResult.english}`;
+            llmOutput.dataset.japanese = llmResult.japanese || "";
+            llmOutput.dataset.english = llmResult.english || "";
             llmOutput.style.color = "#1f3c88";
+
+            if (llmResult.audioUrl) {
+              const src = llmResult.audioUrl.startsWith("http")
+                ? llmResult.audioUrl
+                : `${BACKEND_BASE_URL}${llmResult.audioUrl}`;
+              try {
+                if (currentAudio) {
+                  currentAudio.pause();
+                  currentAudio = null;
+                }
+                currentAudio = new Audio(src);
+                currentAudio.play().catch(() => {});
+              } catch (e) {
+                console.error("Audio playback failed", e);
+              }
+            } else if (llmResult.ttsError) {
+              console.warn(llmResult.ttsError);
+              llmOutput.dataset.ttsError = llmResult.ttsError;
+              llmOutput.title = llmResult.ttsError;
+            }
           } else {
             llmOutput.textContent = `Gemma 3 error: ${llmResult.error || "Unknown error"}`;
             llmOutput.style.color = "#dc3545";
