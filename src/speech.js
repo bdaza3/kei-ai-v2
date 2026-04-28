@@ -5,12 +5,14 @@ const llmOutput = document.getElementById("llmOutput");
 const TRANSCRIBE_URL = "http://localhost:5000/transcribe";
 const CHAT_URL = "http://localhost:5000/chat";
 const BACKEND_BASE_URL = new URL(CHAT_URL).origin;
+const AUDIO_JOB_URL = `${BACKEND_BASE_URL}/audio-jobs`;
 
 let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
 let isTranscribing = false;
 let currentAudio = null;
+let currentAudioJobToken = 0;
 
 const transcriptHandlers = [];
 export function onTranscript(handler) {
@@ -54,6 +56,8 @@ async function askGemma(transcriptText) {
         japanese: typeof data.japanese === "string" ? data.japanese.trim() : "",
         english: typeof data.english === "string" ? data.english.trim() : "",
         audioUrl: typeof data.audio_url === "string" ? data.audio_url.trim() : "",
+        audioJobId: typeof data.audio_job_id === "string" ? data.audio_job_id.trim() : "",
+        audioPending: Boolean(data.audio_pending),
         ttsError: typeof data.tts_error === "string" ? data.tts_error.trim() : "",
         model: data.model || "Gemma 3",
       };
@@ -61,6 +65,53 @@ async function askGemma(transcriptText) {
     return { error: "Invalid LLM response format" };
   } catch (err) {
     return { error: "Could not reach OpenRouter chat endpoint. Make sure whisper_server.py is running." };
+  }
+}
+
+async function waitForAudioJob(audioJobId, token) {
+  if (!audioJobId) return null;
+
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (token !== currentAudioJobToken) return null;
+    try {
+      const response = await fetch(`${AUDIO_JOB_URL}/${encodeURIComponent(audioJobId)}`);
+      if (!response.ok) {
+        return null;
+      }
+      const job = await response.json();
+      if (token !== currentAudioJobToken) return null;
+      if (job && typeof job.audio_url === "string" && job.audio_url.trim()) {
+        return job.audio_url.trim();
+      }
+      if (job && job.status === "error") {
+        if (llmOutput && typeof job.tts_error === "string" && job.tts_error.trim()) {
+          llmOutput.dataset.ttsError = job.tts_error.trim();
+          llmOutput.title = job.tts_error.trim();
+        }
+        return null;
+      }
+    } catch (err) {
+      return null;
+    }
+    await new Promise(resolve => setTimeout(resolve, 350));
+  }
+  return null;
+}
+
+async function playBackendAudio(audioUrl, token) {
+  if (!audioUrl || token !== currentAudioJobToken) return;
+  const src = audioUrl.startsWith("http")
+    ? audioUrl
+    : `${BACKEND_BASE_URL}${audioUrl}`;
+  try {
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio = null;
+    }
+    currentAudio = new Audio(src);
+    currentAudio.play().catch(() => {});
+  } catch (e) {
+    console.error("Audio playback failed", e);
   }
 }
 
@@ -113,39 +164,35 @@ async function startRecording() {
         }
 
         if (llmOutput) {
-          llmOutput.textContent = "Gemma 3 is thinking...";
+          llmOutput.textContent = "Kei is thinking...";
           llmOutput.style.color = "#333";
         }
 
         const llmResult = await askGemma(cleaned);
         if (llmOutput) {
           if (llmResult.english) {
-            llmOutput.textContent = `Gemma 3: ${llmResult.english}`;
+            llmOutput.textContent = `Kei: ${llmResult.english}`;
             llmOutput.dataset.japanese = llmResult.japanese || "";
             llmOutput.dataset.english = llmResult.english || "";
             llmOutput.style.color = "#1f3c88";
+            delete llmOutput.dataset.ttsError;
+            llmOutput.title = "";
 
+            currentAudioJobToken += 1;
+            const token = currentAudioJobToken;
             if (llmResult.audioUrl) {
-              const src = llmResult.audioUrl.startsWith("http")
-                ? llmResult.audioUrl
-                : `${BACKEND_BASE_URL}${llmResult.audioUrl}`;
-              try {
-                if (currentAudio) {
-                  currentAudio.pause();
-                  currentAudio = null;
-                }
-                currentAudio = new Audio(src);
-                currentAudio.play().catch(() => {});
-              } catch (e) {
-                console.error("Audio playback failed", e);
-              }
+              playBackendAudio(llmResult.audioUrl, token);
+            } else if (llmResult.audioPending && llmResult.audioJobId) {
+              waitForAudioJob(llmResult.audioJobId, token).then((readyAudioUrl) => {
+                if (readyAudioUrl) playBackendAudio(readyAudioUrl, token);
+              });
             } else if (llmResult.ttsError) {
               console.warn(llmResult.ttsError);
               llmOutput.dataset.ttsError = llmResult.ttsError;
               llmOutput.title = llmResult.ttsError;
             }
           } else {
-            llmOutput.textContent = `Gemma 3 error: ${llmResult.error || "Unknown error"}`;
+            llmOutput.textContent = `Kei error: ${llmResult.error || "Unknown error"}`;
             llmOutput.style.color = "#dc3545";
           }
         }

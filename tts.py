@@ -10,11 +10,31 @@ import subprocess
 import tempfile
 import urllib.parse
 import urllib.request
+import wave
 from pathlib import Path
 import threading
 from typing import Any, Optional
 
 import numpy as np
+
+def _log_wav_info(path: Path) -> None:
+    try:
+        if not path.exists():
+            logging.warning("_log_wav_info: file not found: %s", path)
+            return
+        with wave.open(str(path), "rb") as wf:
+            channels = wf.getnchannels()
+            rate = wf.getframerate()
+            frames = wf.getnframes()
+            duration = float(frames) / float(rate) if rate > 0 else 0.0
+        size = path.stat().st_size
+        logging.info("Reference audio info: %s — channels=%s rate=%sHz duration=%.2fs size=%d bytes", path, channels, rate, duration, size)
+        if duration < 3.0:
+            logging.warning("Reference audio appears short (%.2fs). Qwen voice-clone works best with a clean 10-30s sample.", duration)
+        if channels != 1:
+            logging.warning("Reference audio is not mono — it will be converted to mono by ffmpeg when available.")
+    except Exception:
+        logging.exception("Failed to inspect reference audio: %s", path)
 
 
 def _expand_short_text(text: str) -> str:
@@ -28,6 +48,81 @@ def _expand_short_text(text: str) -> str:
             return cleaned + " もう少し落ち着いて話すから、ちゃんと聞いてください。"
         return cleaned + "。もう少し落ち着いて話すから、ちゃんと聞いてください。"
     return cleaned
+
+
+def _normalize_waveform_array(wav: np.ndarray) -> np.ndarray:
+    raw = np.asarray(wav)
+    arr = raw.astype(np.float32, copy=False).reshape(-1)
+    if arr.size == 0:
+        return arr
+
+    finite = np.isfinite(arr)
+    if not finite.all():
+        arr = arr[finite]
+    if arr.size == 0:
+        return arr
+
+    peak = float(np.max(np.abs(arr)))
+    if peak <= 0.0:
+        return np.asarray([], dtype=np.float32)
+
+    # Qwen output format varies by environment. Normalize everything into [-1, 1]
+    # first so we do not accidentally clip PCM-scaled arrays into static.
+    if np.issubdtype(raw.dtype, np.integer):
+        dtype_info = np.iinfo(raw.dtype)
+        scale = float(max(abs(dtype_info.min), dtype_info.max))
+        if scale > 0:
+            arr = arr / scale
+    elif peak > 1.2:
+        # Some builds return float arrays that actually hold PCM-like sample values.
+        # Treat those as int16-scale audio instead of hard-clipping them.
+        arr = arr / 32768.0
+        peak = float(np.max(np.abs(arr))) if arr.size else 0.0
+
+    peak = float(np.max(np.abs(arr))) if arr.size else 0.0
+    if peak <= 0.0:
+        return np.asarray([], dtype=np.float32)
+
+    mean_abs = float(np.mean(np.abs(arr))) if arr.size else 0.0
+    if peak < 0.01 or mean_abs < 0.001:
+        return np.asarray([], dtype=np.float32)
+
+    # After scale normalization, gently lift only genuinely quiet but valid clips.
+    if peak < 0.85:
+        arr = arr * (0.92 / peak)
+
+    return np.clip(arr, -0.98, 0.98).astype(np.float32, copy=False)
+
+
+def _is_audible_waveform(wav: np.ndarray, sample_rate: int) -> bool:
+    arr = np.asarray(wav, dtype=np.float32).reshape(-1)
+    if arr.size == 0 or sample_rate <= 0:
+        return False
+
+    duration = float(arr.size) / float(sample_rate)
+    peak = float(np.max(np.abs(arr))) if arr.size else 0.0
+    mean_abs = float(np.mean(np.abs(arr))) if arr.size else 0.0
+    return duration >= 0.18 and peak >= 0.02 and mean_abs >= 0.003
+
+
+def _is_valid_wav_file(path: Path) -> bool:
+    try:
+        if not path.exists() or path.stat().st_size <= 44:
+            return False
+        with wave.open(str(path), "rb") as wav_file:
+            frames = wav_file.getnframes()
+            sample_rate = wav_file.getframerate()
+            if frames <= 0 or sample_rate <= 0:
+                return False
+            pcm = np.frombuffer(wav_file.readframes(frames), dtype=np.int16)
+        if pcm.size == 0:
+            return False
+        duration = float(frames) / float(sample_rate)
+        peak_pcm = int(np.max(np.abs(pcm)))
+        mean_abs_pcm = float(np.mean(np.abs(pcm)))
+        return duration >= 0.18 and peak_pcm >= 128 and mean_abs_pcm >= 8.0
+    except Exception:
+        return False
 
 
 class VoiceVoxTTS:
@@ -105,6 +200,8 @@ class QwenJapaneseTTS:
     - generated clips are cached by text hash
     """
 
+    CACHE_VERSION = "qwen-v2"
+
     def __init__(self) -> None:
         self.enabled = os.environ.get("YUUKA_ENABLE_QWEN_TTS", "0").lower() in ("1", "true", "yes")
         self.model_name = os.environ.get("YUUKA_QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-Base")
@@ -116,6 +213,7 @@ class QwenJapaneseTTS:
         self._model: Optional[Any] = None
         self._voice_prompt: Optional[Any] = None
         self._soundfile: Optional[Any] = None
+        self._prepared_ref_audio: Optional[Path] = None
         self._lock = threading.Lock()
         self._cache: dict[str, Path] = {}
         self.last_status: str = "not_loaded"
@@ -128,8 +226,11 @@ class QwenJapaneseTTS:
             "last_status": self.last_status,
             "last_error": self.last_error,
             "model_name": self.model_name,
-            "ref_audio": self.ref_audio,
+            "ref_audio": str(self._prepared_ref_audio or self.ref_audio),
         }
+
+    def warm_up(self) -> bool:
+        return self._ensure_loaded()
 
     def _ensure_loaded(self) -> bool:
         if not self.enabled:
@@ -226,9 +327,17 @@ class QwenJapaneseTTS:
                 logging.warning("Qwen3-TTS ref audio file not found: %s", ref_path)
                 return False
 
+            prepared_ref_path = self._prepare_reference_audio(ref_path)
+            self._prepared_ref_audio = prepared_ref_path
+            # Log diagnostics about the prepared reference audio to help debugging
+            try:
+                _log_wav_info(prepared_ref_path)
+            except Exception:
+                logging.exception("Error logging prepared reference audio info")
+
             try:
                 self._voice_prompt = self._model.create_voice_clone_prompt(
-                    ref_audio=str(ref_path),
+                    ref_audio=str(prepared_ref_path),
                     ref_text=self.ref_text,
                 )
             except Exception:
@@ -244,7 +353,80 @@ class QwenJapaneseTTS:
             return True
 
     def _text_key(self, text: str) -> str:
-        return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        payload = f"{self.CACHE_VERSION}|{text}"
+        return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+    def _prepare_reference_audio(self, ref_path: Path) -> Path:
+        if ref_path.suffix.lower() == ".wav":
+            try:
+                with wave.open(str(ref_path), "rb") as wav_file:
+                    if wav_file.getnchannels() == 1 and wav_file.getframerate() in {16000, 22050, 24000, 32000, 44100, 48000}:
+                        return ref_path
+            except Exception:
+                pass
+
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            logging.warning("ffmpeg was not found on PATH; using reference audio as-is: %s", ref_path)
+            return ref_path
+
+        cache_root = Path(tempfile.gettempdir()) / "kei_ai_qwen_ref"
+        cache_root.mkdir(parents=True, exist_ok=True)
+        cache_key = hashlib.sha1(str(ref_path.resolve()).encode("utf-8", errors="ignore")).hexdigest()[:16]
+        prepared_path = cache_root / f"ref_{cache_key}.wav"
+
+        source_mtime = ref_path.stat().st_mtime
+        if prepared_path.exists() and prepared_path.stat().st_mtime >= source_mtime and prepared_path.stat().st_size > 44:
+            return prepared_path
+
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(ref_path),
+            "-ac",
+            "1",
+            "-ar",
+            "24000",
+            "-vn",
+            str(prepared_path),
+        ]
+        completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if completed.returncode != 0 or not prepared_path.exists() or prepared_path.stat().st_size <= 44:
+            logging.warning(
+                "Failed to convert Qwen reference audio with ffmpeg: returncode=%s stderr=%s",
+                completed.returncode,
+                completed.stderr,
+            )
+            return ref_path
+
+        logging.info("Prepared Qwen reference audio: %s -> %s", ref_path, prepared_path)
+        return prepared_path
+
+    def get_cached_file(self, text: str, output_dir: Path) -> Optional[Path]:
+        text = _expand_short_text((text or "").strip())
+        if not text:
+            return None
+
+        key = self._text_key(text)
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached and _is_valid_wav_file(cached):
+                return cached
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        out_path = output_dir / f"qwen_jp_{key}.wav"
+        if _is_valid_wav_file(out_path):
+            with self._lock:
+                self._cache[key] = out_path
+            return out_path
+
+        if out_path.exists():
+            try:
+                out_path.unlink()
+            except Exception:
+                pass
+        return None
 
     def generate_to_file(self, text: str, output_dir: Path) -> Optional[Path]:
         text = (text or "").strip()
@@ -254,58 +436,73 @@ class QwenJapaneseTTS:
             return None
 
         text = _expand_short_text(text)
+        cached_path = self.get_cached_file(text, output_dir)
+        if cached_path is not None:
+            self.last_status = "cached"
+            self.last_error = ""
+            return cached_path
 
         key = self._text_key(text)
-        with self._lock:
-            cached = self._cache.get(key)
-            if cached and cached.exists():
-                return cached
-
         output_dir.mkdir(parents=True, exist_ok=True)
         out_path = output_dir / f"qwen_jp_{key}.wav"
-        if out_path.exists():
-            with self._lock:
-                self._cache[key] = out_path
-            return out_path
 
-        try:
-            wavs, sample_rate = self._model.generate_voice_clone(
-                text=text,
-                language=self.language,
-                voice_clone_prompt=self._voice_prompt,
-                instruct=self.instruct,
-            )
+        generation_variants = [
+            {"language": self.language, "instruct": self.instruct},
+            {"language": self.language, "instruct": ""},
+            {"language": "Japanese", "instruct": self.instruct},
+        ]
 
-            if isinstance(wavs, (list, tuple)):
-                chunks = []
-                for chunk in wavs:
-                    if chunk is None:
-                        continue
-                    arr = np.asarray(chunk)
-                    if arr.size:
-                        chunks.append(arr.reshape(-1))
-                wav = np.concatenate(chunks) if chunks else np.asarray([], dtype=np.float32)
-            else:
-                wav = np.asarray(wavs).reshape(-1)
+        for variant in generation_variants:
+            try:
+                wavs, sample_rate = self._model.generate_voice_clone(
+                    text=text,
+                    language=variant["language"],
+                    voice_clone_prompt=self._voice_prompt,
+                    instruct=variant["instruct"],
+                )
 
-            if wav.size == 0:
-                self.last_status = "empty_audio"
-                self.last_error = "Qwen3-TTS returned empty audio"
-                logging.warning("Qwen3-TTS produced empty audio for text: %s", text)
-                return None
+                if isinstance(wavs, (list, tuple)):
+                    chunks = []
+                    for chunk in wavs:
+                        if chunk is None:
+                            continue
+                        arr = np.asarray(chunk)
+                        if arr.size:
+                            chunks.append(arr.reshape(-1))
+                    wav = np.concatenate(chunks) if chunks else np.asarray([], dtype=np.float32)
+                else:
+                    wav = np.asarray(wavs).reshape(-1)
 
-            wav = wav.astype(np.float32, copy=False)
-            self._soundfile.write(str(out_path), wav, sample_rate, format="WAV", subtype="PCM_16")
-            with self._lock:
-                self._cache[key] = out_path
-            self.last_status = "generated"
-            self.last_error = ""
-            return out_path
-        except Exception:
-            self.last_status = "generation_failed"
-            self.last_error = "Qwen3-TTS generation failed"
-            logging.exception("Qwen3-TTS generation failed")
-            return None
+                wav = _normalize_waveform_array(wav)
+                if not _is_audible_waveform(wav, int(sample_rate or 0)):
+                    logging.warning(
+                        "Qwen3-TTS produced unusable audio for text=%s language=%s instruct=%s",
+                        text,
+                        variant["language"],
+                        bool(variant["instruct"]),
+                    )
+                    continue
+
+                self._soundfile.write(str(out_path), wav, sample_rate, format="WAV", subtype="PCM_16")
+                if not _is_valid_wav_file(out_path):
+                    logging.warning("Qwen3-TTS wrote an invalid WAV file: %s", out_path)
+                    try:
+                        out_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    continue
+
+                with self._lock:
+                    self._cache[key] = out_path
+                self.last_status = "generated"
+                self.last_error = ""
+                return out_path
+            except Exception:
+                logging.exception("Qwen3-TTS generation failed for variant=%s", variant)
+
+        self.last_status = "generation_failed"
+        self.last_error = "Qwen3-TTS generation failed or produced near-silent audio"
+        return None
 
 
 class WindowsSapiTTS:
@@ -327,8 +524,35 @@ class WindowsSapiTTS:
             "ref_audio": "",
         }
 
+    def warm_up(self) -> bool:
+        return os.name == "nt"
+
     def _text_key(self, text: str) -> str:
         return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+    def get_cached_file(self, text: str, output_dir: Path) -> Optional[Path]:
+        text = _expand_short_text((text or "").strip())
+        if not text:
+            return None
+        key = self._text_key(text)
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached and _is_valid_wav_file(cached):
+                return cached
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        out_path = output_dir / f"windows_sapi_{key}.wav"
+        if _is_valid_wav_file(out_path):
+            with self._lock:
+                self._cache[key] = out_path
+            return out_path
+
+        if out_path.exists():
+            try:
+                out_path.unlink()
+            except Exception:
+                pass
+        return None
 
     def generate_to_file(self, text: str, output_dir: Path) -> Optional[Path]:
         text = _expand_short_text(text)
@@ -342,20 +566,11 @@ class WindowsSapiTTS:
         output_dir.mkdir(parents=True, exist_ok=True)
         key = self._text_key(text)
         out_path = output_dir / f"windows_sapi_{key}.wav"
-
-        with self._lock:
-            cached = self._cache.get(key)
-            if cached and cached.exists():
-                self.last_status = "cached"
-                self.last_error = ""
-                return cached
-
-        if out_path.exists():
-            with self._lock:
-                self._cache[key] = out_path
+        cached_path = self.get_cached_file(text, output_dir)
+        if cached_path is not None:
             self.last_status = "cached"
             self.last_error = ""
-            return out_path
+            return cached_path
 
         ps_text = text.replace("'", "''")
         ps_path = str(out_path).replace("'", "''")
@@ -387,7 +602,7 @@ class WindowsSapiTTS:
                 check=False,
             )
 
-            if completed.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
+            if completed.returncode != 0 or not _is_valid_wav_file(out_path):
                 self.last_status = "generation_failed"
                 self.last_error = (completed.stderr or completed.stdout or "Windows TTS generation failed").strip()
                 logging.warning(

@@ -8,6 +8,9 @@ import mimetypes
 import whisper, tempfile, os, sys
 import json
 import logging
+import hashlib
+import threading
+import time
 
 from ai_engine import generate_openrouter_bilingual_reply
 from tts import get_qwen_japanese_tts, get_windows_sapi_tts
@@ -25,6 +28,8 @@ print("Whisper model ready.")
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 GENERATED_AUDIO_DIR = PROJECT_ROOT / "generated_audio"
+_AUDIO_JOBS: dict[str, dict[str, object]] = {}
+_AUDIO_JOBS_LOCK = threading.Lock()
 
 
 def _strip_wrapped_quotes(value: str) -> str:
@@ -72,6 +77,113 @@ def _load_env_file(env_path: Path) -> None:
 
 
 _load_env_file(PROJECT_ROOT / ".env")
+
+
+def _audio_job_id(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def _job_audio_url(path: Path) -> str:
+    rel = path.relative_to(PROJECT_ROOT).as_posix()
+    return f"/{rel}"
+
+
+def _upsert_audio_job(job_id: str, **values: object) -> dict[str, object]:
+    with _AUDIO_JOBS_LOCK:
+        job = _AUDIO_JOBS.get(job_id, {"job_id": job_id, "status": "pending", "updated_at": time.time()})
+        job.update(values)
+        job["updated_at"] = time.time()
+        _AUDIO_JOBS[job_id] = job
+        return dict(job)
+
+
+def _get_audio_job(job_id: str) -> dict[str, object] | None:
+    with _AUDIO_JOBS_LOCK:
+        job = _AUDIO_JOBS.get(job_id)
+        return dict(job) if job else None
+
+
+def _generate_audio_job(job_id: str, text: str) -> None:
+    _upsert_audio_job(job_id, status="running", audio_url=None, tts_error=None)
+    try:
+        wav_path = None
+        tts_status = {}
+
+        qwen_engine = get_qwen_japanese_tts()
+        wav_path = qwen_engine.generate_to_file(text, GENERATED_AUDIO_DIR)
+        tts_status = qwen_engine.status()
+
+        if wav_path is None:
+            fallback_engine = get_windows_sapi_tts()
+            fallback_path = fallback_engine.generate_to_file(text, GENERATED_AUDIO_DIR)
+            if fallback_path is not None:
+                wav_path = fallback_path
+                tts_status = fallback_engine.status()
+                tts_status["fallback"] = "windows_sapi"
+
+        if wav_path is not None:
+            _upsert_audio_job(
+                job_id,
+                status="ready",
+                audio_url=_job_audio_url(wav_path),
+                tts_status=tts_status,
+                tts_error=None,
+            )
+            return
+
+        _upsert_audio_job(
+            job_id,
+            status="error",
+            audio_url=None,
+            tts_status=tts_status,
+            tts_error=(
+                "Japanese TTS did not generate usable audio. Check Qwen TTS env vars, reference voice settings, "
+                "or verify Windows SAPI is available on this machine."
+            ),
+        )
+    except Exception:
+        logging.exception("Failed generating async TTS audio")
+        _upsert_audio_job(
+            job_id,
+            status="error",
+            audio_url=None,
+            tts_error="Japanese TTS failed inside the Python backend. Check backend logs for details.",
+        )
+
+
+def _get_or_start_audio_job(text: str) -> dict[str, object]:
+    job_id = _audio_job_id(text)
+    existing = _get_audio_job(job_id)
+    if existing and existing.get("status") in {"pending", "running", "ready"}:
+        return existing
+
+    qwen_engine = get_qwen_japanese_tts()
+    cached = qwen_engine.get_cached_file(text, GENERATED_AUDIO_DIR)
+    if cached is not None:
+        return _upsert_audio_job(
+            job_id,
+            status="ready",
+            audio_url=_job_audio_url(cached),
+            tts_status=qwen_engine.status(),
+            tts_error=None,
+        )
+
+    fallback_engine = get_windows_sapi_tts()
+    fallback_cached = fallback_engine.get_cached_file(text, GENERATED_AUDIO_DIR)
+    if fallback_cached is not None:
+        status = fallback_engine.status()
+        status["fallback"] = "windows_sapi"
+        return _upsert_audio_job(
+            job_id,
+            status="ready",
+            audio_url=_job_audio_url(fallback_cached),
+            tts_status=status,
+            tts_error=None,
+        )
+
+    job = _upsert_audio_job(job_id, status="pending", audio_url=None, tts_error=None, tts_status={})
+    threading.Thread(target=_generate_audio_job, args=(job_id, text), daemon=True).start()
+    return job
 
 @csrf_exempt
 def transcribe(request):
@@ -156,28 +268,18 @@ def chat(request):
                 english_text = str(reply.get("english", "") or "").strip()
 
                 audio_url = None
+                audio_job_id = None
+                audio_pending = False
                 tts_error = None
                 tts_status = {}
                 if japanese_text:
                     try:
-                        tts_engine = get_qwen_japanese_tts()
-                        tts_status = tts_engine.status()
-                        wav_path = tts_engine.generate_to_file(japanese_text, GENERATED_AUDIO_DIR)
-                        if wav_path is None:
-                            fallback_engine = get_windows_sapi_tts()
-                            fallback_path = fallback_engine.generate_to_file(japanese_text, GENERATED_AUDIO_DIR)
-                            if fallback_path is not None:
-                                wav_path = fallback_path
-                                tts_status = fallback_engine.status()
-                                tts_status["fallback"] = "windows_sapi"
-                        if wav_path is not None:
-                            rel = wav_path.relative_to(PROJECT_ROOT).as_posix()
-                            audio_url = f"/{rel}"
-                        else:
-                            tts_error = (
-                                "Japanese TTS did not generate audio. Check Qwen TTS env vars and dependencies, "
-                                "or verify Windows SAPI is available on this machine."
-                            )
+                        audio_job = _get_or_start_audio_job(japanese_text)
+                        audio_job_id = str(audio_job.get("job_id") or "")
+                        audio_url = str(audio_job.get("audio_url") or "") or None
+                        tts_status = audio_job.get("tts_status") if isinstance(audio_job.get("tts_status"), dict) else {}
+                        tts_error = str(audio_job.get("tts_error") or "") or None
+                        audio_pending = audio_url is None and audio_job.get("status") in {"pending", "running"}
                     except Exception:
                         logging.exception("Failed generating Qwen3-TTS audio")
                         tts_error = "Japanese TTS failed inside the Python backend. Check backend logs for details."
@@ -186,6 +288,8 @@ def chat(request):
                     "japanese": japanese_text,
                     "english": english_text,
                     "audio_url": audio_url,
+                    "audio_job_id": audio_job_id,
+                    "audio_pending": audio_pending,
                     "tts_error": tts_error,
                     "tts_status": tts_status,
                     "model": model_name,
@@ -203,6 +307,25 @@ def chat(request):
 
     response["Access-Control-Allow-Origin"] = "*"
     response["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    response["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
+
+
+@csrf_exempt
+def audio_job_status(request, job_id: str):
+    if request.method == "OPTIONS":
+        response = JsonResponse({})
+    elif request.method == "GET":
+        job = _get_audio_job(job_id)
+        if not job:
+            response = JsonResponse({"error": "Audio job not found"}, status=404)
+        else:
+            response = JsonResponse(job)
+    else:
+        response = JsonResponse({"error": "Method not allowed"}, status=405)
+
+    response["Access-Control-Allow-Origin"] = "*"
+    response["Access-Control-Allow-Methods"] = "GET, OPTIONS"
     response["Access-Control-Allow-Headers"] = "Content-Type"
     return response
 
@@ -241,10 +364,12 @@ def serve_frontend(request, path=""):
 urlpatterns = [
     path("transcribe", transcribe),
     path("chat", chat),
+    path("audio-jobs/<str:job_id>", audio_job_status),
     re_path(r"^(?P<path>.*)$", serve_frontend),
 ]
 
 if __name__ == "__main__":
+    threading.Thread(target=lambda: get_qwen_japanese_tts().warm_up(), daemon=True).start()
     sys.argv = ["whisper_server.py", "runserver", "5000", "--noreload"]
     from django.core.management import execute_from_command_line
     execute_from_command_line(sys.argv)

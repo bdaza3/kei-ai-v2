@@ -39,6 +39,34 @@ import json
 import re
 
 
+def _extract_message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text_value = item.get("text") or item.get("content")
+                if isinstance(text_value, str):
+                    parts.append(text_value)
+        return "\n".join(part for part in parts if part).strip()
+    if isinstance(content, dict):
+        text_value = content.get("text") or content.get("content")
+        if isinstance(text_value, str):
+            return text_value
+    return ""
+
+
+def _strip_json_fences(text: str) -> str:
+    candidate = (text or "").strip()
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.IGNORECASE)
+        candidate = re.sub(r"\s*```$", "", candidate)
+    return candidate.strip()
+
+
 def _normalize_openrouter_model(model_name: Optional[str]) -> str:
     raw = (model_name or "").strip()
     if not raw:
@@ -195,7 +223,7 @@ def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
     if not text:
         return None
 
-    candidate = text.strip()
+    candidate = _strip_json_fences(text)
     try:
         parsed = json.loads(candidate)
         if isinstance(parsed, dict):
@@ -323,13 +351,15 @@ def _openrouter_generate(prompt: str, model: Optional[str] = None, timeout: floa
                     first = choices[0]
                     if isinstance(first, dict):
                         msg = first.get("message") or first.get("delta")
-                        if isinstance(msg, dict) and "content" in msg and isinstance(msg["content"], str):
-                            result_text = msg["content"]
+                        if isinstance(msg, dict) and "content" in msg:
+                            result_text = _extract_message_text(msg.get("content"))
                         else:
                             # fallback to text/content keys
                             for k in ("text", "content"):
-                                if k in first and isinstance(first[k], str):
-                                    result_text = first[k]
+                                if k in first:
+                                    result_text = _extract_message_text(first[k])
+                                    if result_text:
+                                        break
 
                 # other possible keys
                 if not result_text:
@@ -524,14 +554,15 @@ def generate_openrouter_bilingual_reply(
                     first = choices[0]
                     if isinstance(first, dict):
                         msg = first.get("message") or first.get("delta")
-                        if isinstance(msg, dict) and isinstance(msg.get("content"), str):
-                            raw_text = msg["content"]
+                        if isinstance(msg, dict):
+                            raw_text = _extract_message_text(msg.get("content"))
 
                 if not raw_text:
                     for key in ("response", "output", "output_text", "text"):
-                        if key in data and isinstance(data[key], str):
-                            raw_text = data[key]
-                            break
+                        if key in data:
+                            raw_text = _extract_message_text(data[key])
+                            if raw_text:
+                                break
 
             if raw_text:
                 last_raw = raw_text
