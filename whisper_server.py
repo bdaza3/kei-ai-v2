@@ -258,7 +258,7 @@ def chat(request):
 
             reply = generate_openrouter_bilingual_reply(
                 text,
-                context={"source": "web_voice_input"},
+                context={"source": "web_text_chat"},
                 model=model_name,
                 timeout=timeout,
             )
@@ -266,32 +266,9 @@ def chat(request):
             if reply:
                 japanese_text = str(reply.get("japanese", "") or "").strip()
                 english_text = str(reply.get("english", "") or "").strip()
-
-                audio_url = None
-                audio_job_id = None
-                audio_pending = False
-                tts_error = None
-                tts_status = {}
-                if japanese_text:
-                    try:
-                        audio_job = _get_or_start_audio_job(japanese_text)
-                        audio_job_id = str(audio_job.get("job_id") or "")
-                        audio_url = str(audio_job.get("audio_url") or "") or None
-                        tts_status = audio_job.get("tts_status") if isinstance(audio_job.get("tts_status"), dict) else {}
-                        tts_error = str(audio_job.get("tts_error") or "") or None
-                        audio_pending = audio_url is None and audio_job.get("status") in {"pending", "running"}
-                    except Exception:
-                        logging.exception("Failed generating Qwen3-TTS audio")
-                        tts_error = "Japanese TTS failed inside the Python backend. Check backend logs for details."
-
                 response = JsonResponse({
                     "japanese": japanese_text,
                     "english": english_text,
-                    "audio_url": audio_url,
-                    "audio_job_id": audio_job_id,
-                    "audio_pending": audio_pending,
-                    "tts_error": tts_error,
-                    "tts_status": tts_status,
                     "model": model_name,
                 })
             else:
@@ -369,7 +346,6 @@ urlpatterns = [
 ]
 
 if __name__ == "__main__":
-    threading.Thread(target=lambda: get_qwen_japanese_tts().warm_up(), daemon=True).start()
     sys.argv = ["whisper_server.py", "runserver", "5000", "--noreload"]
     from django.core.management import execute_from_command_line
     execute_from_command_line(sys.argv)

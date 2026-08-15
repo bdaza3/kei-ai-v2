@@ -19,32 +19,18 @@
   <div class="layout">
     <div class="panel" style="max-width:720px;">
       <h1>Kei.AI V2</h1>
-      <p class="subtitle">Voice recorder and transcription tool.</p>
+      <p class="subtitle">Text chat mode</p>
 
-      <div class="record-btns">
-        <button id="recordBtn">Start Recording</button>
-      </div>
+      <form id="chatForm">
+        <label for="chatInput" style="display:block; margin-bottom:8px; font-weight:600;">Type a message for Kei</label>
+        <textarea id="chatInput" rows="4" style="width:100%; box-sizing:border-box; resize:vertical;" placeholder="Ask Kei anything..."></textarea>
+        <div style="margin-top:12px; display:flex; gap:10px; align-items:center;">
+          <button type="submit" id="sendBtn">Send</button>
+        </div>
+      </form>
 
-      <div id="speechOutput">Press Enter (or click Start Recording), speak, then press Enter again to transcribe.</div>
-      <div id="llmOutput" aria-live="polite"></div>
-
-      <div class="voice-commands-list" style="margin-top:18px;">
-        <p><strong>Notes:</strong></p>
-        <ul>
-          <li>Click the button or press <strong>Enter</strong> to start/stop recording.</li>
-          <li>Transcription sent to <code>http://localhost:5000/transcribe</code> by default.</li>
-        </ul>
-      </div>
-    </div>
-    <div style="max-width:720px; margin-top:12px;">
-      <label for="testAudioFile">Test audio (mp3/wav):</label>
-      <input id="testAudioFile" type="file" accept="audio/*">
-      <button id="playTestAudioBtn">Play Test Audio</button>
-      <div style="margin-top:8px;">
-        <button id="btnNeutral">Neutral</button>
-        <button id="btnHappy">Happy</button>
-        <button id="btnSad">Sad</button>
-      </div>
+      <div id="speechOutput" style="margin-top:16px;">Voice input is temporarily disabled. Type a message below to chat with Kei.</div>
+      <div id="llmOutput" aria-live="polite" style="margin-top:12px; white-space:pre-wrap;"></div>
     </div>
 
     <div id="avatar-area" style="position:fixed; right:18px; top:120px; width:360px; height:480px; pointer-events:auto;">

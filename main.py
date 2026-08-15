@@ -113,11 +113,15 @@ def run_assistant(poll_interval: float = 1.0) -> None:
     monitor = ActivityMonitor(
         on_entry_logged=lambda entry: event_logger.log_event("activity_entry", {"entry": entry}),
     )
+    voice_enabled = os.environ.get("YUUKA_ENABLE_VOICE_INPUT", "0").lower() in ("1", "true", "yes")
     voice = None
-    try:
-        voice = VoiceInput()
-    except Exception as exc:
-        logging.exception("Failed to initialize microphone input: %s", exc)
+    if voice_enabled:
+        try:
+            voice = VoiceInput()
+        except Exception as exc:
+            logging.exception("Failed to initialize microphone input: %s", exc)
+    else:
+        logging.info("Voice input disabled for text-only mode")
 
     def start_transcript_receiver(host: str = "127.0.0.1", port: int = 8765) -> None:
         class _Handler(BaseHTTPRequestHandler):
@@ -165,7 +169,8 @@ def run_assistant(poll_interval: float = 1.0) -> None:
         thread.start()
         logging.info("Transcript receiver listening on http://%s:%d", host, port)
 
-    start_transcript_receiver()
+    if voice_enabled:
+        start_transcript_receiver()
 
     stop_event = threading.Event()
     # segment_seconds controls how long the recorder records before sending
