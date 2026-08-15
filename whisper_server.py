@@ -12,7 +12,7 @@ import hashlib
 import threading
 import time
 
-from ai_engine import generate_openrouter_bilingual_reply
+from ai_engine import generate_tool_call_reply, generate_plain_text_reply, _normalize_openrouter_model
 from tts import get_qwen_japanese_tts, get_windows_sapi_tts
 
 settings.configure(
@@ -77,6 +77,13 @@ def _load_env_file(env_path: Path) -> None:
 
 
 _load_env_file(PROJECT_ROOT / ".env")
+
+
+def _resolve_openrouter_settings() -> tuple[str, str]:
+    _load_env_file(PROJECT_ROOT / ".env")
+    api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("GEMMA3_4B_API_KEY") or ""
+    model_name = os.environ.get("OPENROUTER_MODEL") or "google/gemma-3-4b-it:free"
+    return api_key, _normalize_openrouter_model(model_name)
 
 
 def _audio_job_id(text: str) -> str:
@@ -250,35 +257,42 @@ def chat(request):
         if not text:
             response = JsonResponse({"error": "No text provided"}, status=400)
         else:
-            model_name = os.environ.get("OPENROUTER_MODEL", "google/gemma-3-4b-it:free")
+            api_key, model_name = _resolve_openrouter_settings()
             try:
                 timeout = float(os.environ.get("OPENROUTER_TIMEOUT", "12"))
             except Exception:
                 timeout = 12.0
 
-            reply = generate_openrouter_bilingual_reply(
-                text,
-                context={"source": "web_text_chat"},
-                model=model_name,
-                timeout=timeout,
-            )
-
-            if reply:
-                japanese_text = str(reply.get("japanese", "") or "").strip()
-                english_text = str(reply.get("english", "") or "").strip()
-                response = JsonResponse({
-                    "japanese": japanese_text,
-                    "english": english_text,
-                    "model": model_name,
-                })
-            else:
+            if not api_key:
                 response = JsonResponse(
                     {
-                        "error": "No response from OpenRouter. Verify OPENROUTER_API_KEY/OPENROUTER_MODEL and restart whisper_server.py after env changes.",
+                        "error": "OpenRouter is not configured. Set OPENROUTER_API_KEY or GEMMA3_4B_API_KEY in the environment or .env before starting whisper_server.py.",
                         "model": model_name,
                     },
                     status=503,
                 )
+            else:
+                reply_text = generate_tool_call_reply(
+                    text,
+                    context={"source": "web_text_chat"},
+                    model=model_name,
+                    timeout=timeout,
+                )
+
+                if reply_text:
+                    response = JsonResponse({
+                        "japanese": "",
+                        "english": reply_text,
+                        "model": model_name,
+                    })
+                else:
+                    response = JsonResponse(
+                        {
+                            "error": "No response from OpenRouter. The key is present, but the request failed. Check OPENROUTER_MODEL and the API key validity, then reload the server.",
+                            "model": model_name,
+                        },
+                        status=503,
+                    )
     else:
         response = JsonResponse({"error": "Method not allowed"}, status=405)
 

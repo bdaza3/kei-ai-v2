@@ -1,4 +1,5 @@
 """Desktop activity monitoring."""
+#Low level desktop activity monitoring for Windows
 
 from __future__ import annotations
 
