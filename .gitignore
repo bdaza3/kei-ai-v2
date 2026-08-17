@@ -5,3 +5,4 @@ src/config.js
 .venv/
 __pycache__/
 *.pyc
+.env*
