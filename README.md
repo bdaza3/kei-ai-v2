@@ -1,89 +1,134 @@
-Kei.AI V2
+# Kei.AI V2
 
-## Setup & Running
+Kei.AI is a local-first conversational productivity assistant that combines speech recognition, LLM chat, text-to-speech, and a real-time 3D VRM avatar in the browser whose purpose is to help the user focus on tasks and avoid procrastination or veering off their work responsibilities. 
+
+The project is built as a full-stack prototype with a Python API backend and a JavaScript frontend.
+
+## Core Features
+
+- Speech-to-text transcription with OpenAI Whisper
+- Text chat endpoint backed by OpenRouter-compatible models
+- Async audio generation jobs with status polling and file caching
+- Japanese TTS support via Qwen3-TTS, with Windows SAPI fallback
+- Browser 3D avatar rendering (VRM) with emotion states and lip-sync
+- Responsive text-chat UI with live assistant output
+
+## Tech Stack
+
+### Backend
+
+- Python
+- Django (lightweight API routing)
+- OpenAI Whisper (`openai-whisper`)
+- Requests (HTTP client for model calls)
+- Threading + file-based audio caching
+
+### Frontend
+
+- JavaScript (ES modules)
+- Three.js
+- `@pixiv/three-vrm`
+- Web Audio API (playback analysis for mouth movement)
+- HTML/CSS
+
+### AI / Model Integrations
+
+- OpenRouter Chat Completions API
+- Whisper STT model
+- Qwen3-TTS voice generation (optional)
+- Windows SAPI TTS fallback
+
+## Architecture Overview
+
+1. User submits text (or voice input pipeline transcribes speech).
+2. Frontend sends message to backend `/chat` endpoint.
+3. Backend calls OpenRouter model and returns assistant text.
+4. TTS engine generates audio (async job + cached reuse).
+5. Frontend plays audio and drives avatar lip-sync/emotion updates.
+
+## Project Structure
+
+```text
+kei-ai-v2/
+	whisper_server.py      # API endpoints: /transcribe, /chat, /audio-jobs
+	ai_engine.py           # LLM prompt + OpenRouter integration
+	tts.py                 # Qwen/Windows TTS implementations
+	src/
+		main.js              # App bootstrap
+		speech.js            # Chat form + backend requests
+		audio.js             # Audio player + analyser for lip-sync
+		avatar.js            # Three.js VRM loader and animation helpers
+	data/memory/           # Character/user memory files
+	generated_audio/       # Runtime-generated/cached audio outputs
+	model/                 # Avatar assets
+```
+
+## Local Setup
 
 ### Prerequisites
-- Discrete GPU prefered, but as it is ran locally with the base model, your laptop should run it fine.
-- VsCode if available
-- Python 3.x, Vscode python extension recommended as well
+
+- Python 3.x
 - Node.js
-- ffmpeg — install with `winget install ffmpeg`, then add it to your PATH windows environment variables, you can also install ffmpeg online.
-- Optional to have python virtual environment, but used in this to do list.
-### 1. Install Node dependencies
+- ffmpeg (recommended for audio tooling)
+
+Windows install example:
+
+```powershell
+winget install ffmpeg
+```
+
+### 1. Install frontend dependencies
+
 ```bash
 npm install
 ```
 
-### 2. Set up Python environment
+### 2. Create Python environment and install dependencies
+
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-#^---This will install django backend utilities and OpenAi's whisper api
-Then run:
-pip install flask
-pip install flask_cors
 ```
 
-### 3. Start the Whisper server (Terminal 1)
+### 3. Configure environment variables
+
+Use a local `.env` file (not committed) with your own keys.
+
+```powershell
+$env:OPENROUTER_API_KEY='YOUR_KEY_HERE'
+$env:OPENROUTER_MODEL='google/gemma-3-4b-it:free'
+$env:OPENROUTER_ENDPOINT='https://api.openrouter.ai/v1/chat/completions'
+```
+### 4. Start backend (Terminal 1)
+
 ```bash
-.venv\Scripts\activate # Or download python extension on vscode and run python create environment
+.venv\Scripts\activate
 python whisper_server.py
 ```
-First run will download the Whisper `base` model (~145 MB). Wait for:
-`Whisper model ready.`
 
-### 4. Start the frontend (Terminal 2)
+On first run, Whisper downloads its model locally.
+
+### 5. Start frontend (Terminal 2)
+
 ```bash
 npx serve .
 ```
 
-### 5. Open the app
-Go to `http://localhost:3000` in Chrome or Edge. Chromium Browser prefered. Sometimes, if port is taken already, it will use a different port which you will see in the terminal.
+### 6. Open app
 
-### Voice Commands
+Visit `http://localhost:3000` (or the port shown in terminal output).
 
-## Qwen3 Japanese TTS (Voice Clone)
+## Optional: Qwen3 Japanese TTS Voice Clone
 
-This project now supports returning Japanese audio from the `/chat` endpoint using Qwen3-TTS, while showing English text in the UI.
-
-### Install (recommended in a dedicated env)
+To enable Qwen-based Japanese TTS in the backend:
 
 ```bash
 conda create -n qwen3-tts python=3.12 -y
 conda activate qwen3-tts
-pip install -U qwen-tts
-pip install soundfile
+pip install -U qwen-tts soundfile
 ```
 
-Optional GPU acceleration:
+## Current Status
 
-```bash
-pip install flash-attn --no-build-isolation
-```
-
-### Required environment variables
-
-Set these before starting `python whisper_server.py`:
-
-Important:
-- These must be set in the terminal that launches the Python backend, or saved in `.env`.
-- Setting them only in the `npx serve .` terminal will not enable Qwen TTS, because that terminal only serves the frontend.
-
-```powershell
-$env:YUUKA_ENABLE_QWEN_TTS='1'
-$env:YUUKA_QWEN_TTS_MODEL='Qwen/Qwen3-TTS-12Hz-1.7B-Base'
-$env:YUUKA_QWEN_TTS_DEVICE_MAP='cpu'   # use 'cuda:0' only if your torch build has CUDA
-$env:YUUKA_QWEN_TTS_DTYPE='float32'    # use bfloat16 only on supported GPU setups
-$env:YUUKA_QWEN_TTS_ATTN_IMPL='eager'  # flash_attention_2 is optional, not required
-
-$env:YUUKA_QWEN_TTS_REF_AUDIO='data/voice/your_reference_voice.ogg'
-$env:YUUKA_QWEN_TTS_REF_TEXT='This is my voice speaking naturally for cloning.'
-$env:YUUKA_QWEN_TTS_LANGUAGE='Japanese'
-$env:YUUKA_QWEN_TTS_INSTRUCT='Speak softly and naturally.'
-```
-
-Notes:
-- The voice clone prompt is created once and reused automatically for low latency.
-- Generated audio files are cached under `generated_audio/`.
-- If your PyTorch build does not have CUDA, keep `YUUKA_QWEN_TTS_DEVICE_MAP='cpu'`.
+This is an active prototype focused on local development and rapid iteration. The codebase is structured to support future production hardening (auth, deployment config, monitoring, and test coverage).
