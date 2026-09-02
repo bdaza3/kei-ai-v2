@@ -1,2 +1,5 @@
 django
 openai-whisper
+requests
+psycopg[binary]>=3.2
+pgvector>=0.3
