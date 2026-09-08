@@ -3,8 +3,8 @@
 The graph is intentionally small but establishes the extension points for more
 specialist agents and tools:
 
-    route_request -> specialist agent -> tool executor -> specialist agent
-                                      -> final response
+    supervisor -> specialist agent -> tool executor -> supervisor
+                                                    -> final response
 
 The model never executes tools directly. LangGraph routes tool calls through
 an allowlisted ToolNode, and each request has a bounded recursion limit.
@@ -29,6 +29,26 @@ load_dotenv()
 
 DEFAULT_MODEL = "google/gemma-3-4b-it:free"
 MAX_GRAPH_STEPS = 12
+SupervisorRoute = Literal["productivity", "general"]
+
+SUPERVISOR_SYSTEM_PROMPT = """You are the executive manager of Kei's multi-agent productivity assistant team.
+Your sole responsibility is to orchestrate tasks by deciding which specialized
+agent should run next based on the current conversation and state.
+
+Available worker agents:
+1. 'productivity_agent': Focus, desktop activity, Pomodoro, and concrete work progress.
+2. 'general_agent': General conversation and requests that do not need a specialist.
+
+Future worker agents will include calendar_agent, email_agent, and file_agent.
+Do not select a future worker until it is registered in the graph.
+
+Rules:
+- Analyze the user's latest request and the conversation history.
+- For a multi-step task, choose the first necessary registered worker.
+- If a worker has just returned information, decide whether another registered worker is needed.
+- Choose exactly one registered worker name and output nothing else.
+- Never perform the task yourself and never call tools.
+"""
 
 
 class AgentState(TypedDict, total=False):
@@ -37,8 +57,11 @@ class AgentState(TypedDict, total=False):
     user_text: str
     context: dict[str, object]
     model_name: str | None
+    supervisor_model_name: str | None
+    supervisor_decision: str
 
 
+#function to build the list of available tools from the TOOL_FUNCTIONS and TOOL_SCHEMAS
 def _build_langchain_tools() -> list[StructuredTool]:
     return [
         StructuredTool.from_function(
@@ -49,7 +72,7 @@ def _build_langchain_tools() -> list[StructuredTool]:
         for schema in TOOL_SCHEMAS
     ]
 
-
+# Build the list of available tools
 TOOLS = _build_langchain_tools()
 
 
@@ -71,11 +94,11 @@ def _model(model_name: str | None = None) -> ChatOpenAI:
         },
     )
 
-
-def _route_request(state: AgentState) -> dict[str, str]:
-    """Route deterministically so routing does not add another LLM call."""
+#function to provide a fallback routing decision if the supervisor model is unavailable
+def _fallback_route_request(state: AgentState) -> SupervisorRoute:
+    """Keep routing available if the supervisor model is unavailable."""
     text = state.get("user_text", "").lower()
-    productivity_terms = (
+    productivity_terms = (#list of terms that indicate a request is related to productivity or focus
         "focus",
         "work",
         "task",
@@ -87,10 +110,43 @@ def _route_request(state: AgentState) -> dict[str, str]:
         "desktop",
         "window",
     )
-    route = "productivity" if any(term in text for term in productivity_terms) else "general"
-    return {"route": route}
+    return "productivity" if any(term in text for term in productivity_terms) else "general"
 
 
+def _route_request(state: AgentState) -> dict[str, str]:
+    """Backward-compatible deterministic routing helper."""
+    return {"route": _fallback_route_request(state)}
+
+
+#function to parse the supervisor's decision and determine the next route in the graph
+#e.g., if the supervisor returns "productivity_agent", this function will return "productivity"
+def _parse_supervisor_route(content: object) -> SupervisorRoute | None:
+    if not isinstance(content, str):
+        return None
+    candidate = content.strip().lower().strip("` .\n")
+    if candidate in {"productivity_agent", "productivity"}:
+        return "productivity"
+    if candidate in {"general_agent", "general"}:
+        return "general"
+    return None
+
+#function to handle the supervisor's decision and route the request to the appropriate specialist agent
+def _supervisor(state: AgentState) -> dict[str, str]:
+    """Ask a separate model to choose the next registered worker."""
+    try:
+        supervisor_model = state.get("supervisor_model_name") or os.environ.get("KEI_SUPERVISOR_MODEL")
+        model = _model(supervisor_model).bind_tools([])
+        response = model.invoke([SystemMessage(content=SUPERVISOR_SYSTEM_PROMPT), *state.get("messages", [])])
+        route = _parse_supervisor_route(response.content)
+        if route is not None:
+            return {"route": route, "supervisor_decision": response.content}
+    except Exception:
+        pass
+
+    fallback = _fallback_route_request(state)
+    return {"route": fallback, "supervisor_decision": f"fallback:{fallback}"}
+
+#function to generate the system prompt for the specialist agent based on the route
 def _specialist_system(route: str) -> str:
     if route == "productivity":
         role = (
@@ -110,7 +166,8 @@ def _specialist_system(route: str) -> str:
 
 def _invoke_specialist(state: AgentState, route: Literal["productivity", "general"]) -> dict[str, list[BaseMessage]]:
     messages = state.get("messages", [])
-    model = _model(state.get("model_name")).bind_tools(TOOLS)
+    configured_model = state.get("model_name") or os.environ.get(f"KEI_{route.upper()}_MODEL")
+    model = _model(configured_model).bind_tools(TOOLS)
     response = model.invoke([SystemMessage(content=_specialist_system(route)), *messages])
     return {"messages": [response]}
 
@@ -127,21 +184,17 @@ def _route_after_request(state: AgentState) -> str:
     return state.get("route", "general")
 
 
-def _route_after_tools(state: AgentState) -> str:
-    return state.get("route", "general")
-
-
 def build_agent_graph():
     """Compile the supervisor/specialist/tool graph."""
     graph = StateGraph(AgentState)
-    graph.add_node("route_request", _route_request)
+    graph.add_node("supervisor", _supervisor)
     graph.add_node("productivity_agent", _productivity_agent)
     graph.add_node("general_agent", _general_agent)
     graph.add_node("tools", ToolNode(TOOLS, handle_tool_errors=True))
 
-    graph.add_edge(START, "route_request")
+    graph.add_edge(START, "supervisor")
     graph.add_conditional_edges(
-        "route_request",
+        "supervisor",
         _route_after_request,
         {"productivity": "productivity_agent", "general": "general_agent"},
     )
@@ -155,8 +208,8 @@ def build_agent_graph():
 
     graph.add_conditional_edges(
         "tools",
-        _route_after_tools,
-        {"productivity": "productivity_agent", "general": "general_agent"},
+        lambda _state: "supervisor",
+        {"supervisor": "supervisor"},
     )
     return graph.compile()
 
@@ -169,8 +222,8 @@ def describe_graph() -> dict[str, object]:
         "edges": [{"from": edge.source, "to": edge.target} for edge in graph.edges],
         "tools": [schema["function"]["name"] for schema in TOOL_SCHEMAS],
         "decision_loop": (
-            "route_request selects a specialist; the specialist asks the LLM; "
-            "tools_condition sends tool calls to tools; tool results return to the specialist; "
+            "supervisor selects a registered specialist; the specialist asks the worker LLM; "
+            "tools_condition sends tool calls to tools; tool results return to the supervisor; "
             "a text response ends the graph."
         ),
     }
@@ -190,7 +243,7 @@ def get_agent_graph():
         _GRAPH = build_agent_graph()
     return _GRAPH
 
-
+#function to run one bounded LangGraph request and return the final assistant text
 def run_langgraph_agent(
     user_text: str,
     context: dict[str, object] | None = None,
@@ -205,6 +258,7 @@ def run_langgraph_agent(
         "user_text": user_text,
         "context": context or {},
         "model_name": model,
+        "supervisor_model_name": os.environ.get("KEI_SUPERVISOR_MODEL"),
         "messages": [
             HumanMessage(
                 content=(

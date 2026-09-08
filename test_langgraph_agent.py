@@ -18,9 +18,16 @@ class _FakeModel:
 
 
 class LangGraphAgentTests(unittest.TestCase):
+    def test_supervisor_prompt_and_fallback_route(self):
+        self.assertIn("executive manager", langgraph_agent.SUPERVISOR_SYSTEM_PROMPT)
+        self.assertEqual(
+            langgraph_agent._supervisor({"user_text": "check my focus status"})["route"],
+            "productivity",
+        )
+
     def test_graph_description_exposes_flow_and_tools(self):
         description = langgraph_agent.describe_graph()
-        self.assertIn("route_request", description["nodes"])
+        self.assertIn("supervisor", description["nodes"])
         self.assertIn("tools", description["nodes"])
         self.assertEqual(
             description["tools"],
@@ -29,7 +36,7 @@ class LangGraphAgentTests(unittest.TestCase):
 
     def test_graph_mermaid_contains_tool_loop(self):
         diagram = langgraph_agent.get_graph_mermaid()
-        self.assertIn("route_request", diagram)
+        self.assertIn("supervisor", diagram)
         self.assertIn("tools", diagram)
 
     def test_routes_productivity_requests(self):
