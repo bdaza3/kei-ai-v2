@@ -20,7 +20,9 @@ from typing import Any, Dict, List, Optional
 import dialogue
 import requests
 from memory import get_memory
-from tools import TOOLS, get_active_window
+from tools import TOOL_SCHEMAS, execute_tool
+
+TOOLS = TOOL_SCHEMAS
 
 DEFAULT_MODEL = "google/gemma-3-4b-it:free"
 OPENROUTER_URL = "https://api.openrouter.ai/v1/chat/completions"
@@ -219,12 +221,9 @@ def dispatch_tool_call(tool_call: Dict[str, Any]) -> Any: #function that execute
 
     logging.info("Tool dispatch: name=%s args=%s", tool_name, arguments)
 
-    if tool_name == "get_active_window":
-        result = get_active_window()
-        logging.info("Tool result: %s", result)
-        return result
-
-    raise ValueError(f"Unsupported tool: {tool_name}")
+    result = execute_tool(tool_name, arguments)
+    logging.info("Tool result: %s", result)
+    return result
 
 
 def _extract_tool_calls(data: Dict[str, Any]) -> List[Dict[str, Any]]:

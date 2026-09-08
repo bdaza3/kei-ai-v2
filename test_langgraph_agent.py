@@ -18,6 +18,20 @@ class _FakeModel:
 
 
 class LangGraphAgentTests(unittest.TestCase):
+    def test_graph_description_exposes_flow_and_tools(self):
+        description = langgraph_agent.describe_graph()
+        self.assertIn("route_request", description["nodes"])
+        self.assertIn("tools", description["nodes"])
+        self.assertEqual(
+            description["tools"],
+            ["get_active_window", "get_activity_snapshot", "get_current_time"],
+        )
+
+    def test_graph_mermaid_contains_tool_loop(self):
+        diagram = langgraph_agent.get_graph_mermaid()
+        self.assertIn("route_request", diagram)
+        self.assertIn("tools", diagram)
+
     def test_routes_productivity_requests(self):
         state = {"user_text": "check my focus status"}
         self.assertEqual(langgraph_agent._route_request(state), {"route": "productivity"})

@@ -23,7 +23,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from tools import get_active_window
+from tools import TOOL_FUNCTIONS, TOOL_SCHEMAS
 
 load_dotenv()
 
@@ -39,21 +39,18 @@ class AgentState(TypedDict, total=False):
     model_name: str | None
 
 
-def _active_window_tool() -> dict[str, object]:
-    """Return current desktop context for grounded productivity responses."""
-    return get_active_window()
+def _build_langchain_tools() -> list[StructuredTool]:
+    return [
+        StructuredTool.from_function(
+            TOOL_FUNCTIONS[schema["function"]["name"]],
+            name=schema["function"]["name"],
+            description=schema["function"]["description"],
+        )
+        for schema in TOOL_SCHEMAS
+    ]
 
 
-ACTIVE_WINDOW_TOOL = StructuredTool.from_function(
-    _active_window_tool,
-    name="get_active_window",
-    description=(
-        "Read the current foreground application, window title, process name, "
-        "activity category, and idle time. This tool is read-only."
-    ),
-)
-
-TOOLS = [ACTIVE_WINDOW_TOOL]
+TOOLS = _build_langchain_tools()
 
 
 def _model(model_name: str | None = None) -> ChatOpenAI:
@@ -164,6 +161,26 @@ def build_agent_graph():
     return graph.compile()
 
 
+def describe_graph() -> dict[str, object]:
+    """Return the graph topology and registered tools for debugging or docs."""
+    graph = get_agent_graph().get_graph()
+    return {
+        "nodes": sorted(graph.nodes),
+        "edges": [{"from": edge.source, "to": edge.target} for edge in graph.edges],
+        "tools": [schema["function"]["name"] for schema in TOOL_SCHEMAS],
+        "decision_loop": (
+            "route_request selects a specialist; the specialist asks the LLM; "
+            "tools_condition sends tool calls to tools; tool results return to the specialist; "
+            "a text response ends the graph."
+        ),
+    }
+
+
+def get_graph_mermaid() -> str:
+    """Return a Mermaid diagram of the compiled graph."""
+    return get_agent_graph().get_graph().draw_mermaid()
+
+
 _GRAPH = None
 
 
@@ -208,4 +225,12 @@ def run_langgraph_agent(
     raise RuntimeError("LangGraph completed without a text response")
 
 
-__all__ = ["AgentState", "TOOLS", "build_agent_graph", "get_agent_graph", "run_langgraph_agent"]
+__all__ = [
+    "AgentState",
+    "TOOLS",
+    "build_agent_graph",
+    "describe_graph",
+    "get_agent_graph",
+    "get_graph_mermaid",
+    "run_langgraph_agent",
+]
