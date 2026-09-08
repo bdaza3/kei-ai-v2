@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import subprocess
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import dialogue
@@ -27,7 +28,9 @@ OPENROUTER_URL = "https://api.openrouter.ai/v1/chat/completions"
 
 def _get_openrouter_url() -> str:
     configured = (os.environ.get("OPENROUTER_ENDPOINT") or "").strip()
-    return configured or OPENROUTER_URL
+    if configured:
+        return configured.rstrip("/")
+    return OPENROUTER_URL
 
 
 def _normalize_openrouter_model(model_name: Optional[str]) -> str:
@@ -152,7 +155,7 @@ def build_user_prompt(user_text: str, context: Optional[Dict[str, Any]] = None) 
     )
 
 
-def llm_chat(
+def llm_chat(#function to send messages to OpenRouter and get a response
     messages: List[Dict[str, Any]],
     *,
     tools: Optional[List[Dict[str, Any]]] = None,
@@ -186,7 +189,7 @@ def llm_chat(
     return response.json()
 
 
-def _parse_text_reply(data: Dict[str, Any]) -> Optional[str]:
+def _parse_text_reply(data: Dict[str, Any]) -> Optional[str]: #parse the text reply from OpenRouter response data
     try:
         choice = data["choices"][0]
         msg = choice.get("message") or choice.get("delta") or {}
@@ -198,7 +201,7 @@ def _parse_text_reply(data: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def dispatch_tool_call(tool_call: Dict[str, Any]) -> Any:
+def dispatch_tool_call(tool_call: Dict[str, Any]) -> Any: #function that executes a tool call and returns the result
     """Execute a single tool call and return the JSON-serializable result."""
     func_block = tool_call.get("function") or {}
     tool_name = str(func_block.get("name") or "").strip()
@@ -235,7 +238,67 @@ def _extract_tool_calls(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return []
 
 
-def generate_tool_call_reply(
+def debug_tool_call_probe(#function that runs a single tool-calling probe and returns the raw decision trail
+    user_text: str,
+    context: Optional[Dict[str, Any]] = None,
+    *,
+    model: Optional[str] = None,
+    timeout: float = 20.0,
+) -> Dict[str, Any]:
+    """Run a single OpenRouter tool-calling probe and return the exact raw decision trail."""
+    context = context or {}
+    messages = [
+        {"role": "system", "content": build_system_prompt()},
+        {"role": "user", "content": build_user_prompt(user_text, context)},
+    ]
+
+    first_pass = llm_chat(messages, tools=TOOLS, model=model, timeout=timeout)
+    tool_calls = _extract_tool_calls(first_pass)
+    result: Dict[str, Any] = {
+        "user_text": user_text,
+        "tool_choice": "auto",
+        "tool_calls_found": bool(tool_calls),
+        "tool_call_count": len(tool_calls),
+        "tool_names": [
+            str((tool.get("function") or {}).get("name") or "unknown") for tool in tool_calls if isinstance(tool, dict)
+        ],
+        "raw_first_pass": first_pass,
+        "first_pass_text": _parse_text_reply(first_pass),
+    }
+
+    if not tool_calls:
+        return result
+
+    executed: List[Dict[str, Any]] = []
+    assistant_tool_calls: List[Dict[str, Any]] = []
+    tool_messages: List[Dict[str, Any]] = []
+    for tool_call in tool_calls:
+        tool_name = str((tool_call.get("function") or {}).get("name") or "unknown")
+        tool_result = dispatch_tool_call(tool_call)
+        executed.append({
+            "tool_name": tool_name,
+            "arguments": (tool_call.get("function") or {}).get("arguments"),
+            "result": tool_result,
+        })
+        assistant_tool_calls.append(tool_call)
+        tool_messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call.get("id", "tool_call_1"),
+            "name": tool_name,
+            "content": json.dumps(tool_result, ensure_ascii=False),
+        })
+
+    messages.append({"role": "assistant", "tool_calls": assistant_tool_calls})
+    messages.extend(tool_messages)
+    second_pass = llm_chat(messages, model=model, timeout=timeout)
+
+    result["tool_results"] = executed
+    result["raw_second_pass"] = second_pass
+    result["second_pass_text"] = _parse_text_reply(second_pass)
+    return result
+
+
+def generate_tool_call_reply(#function that handles tool-calling logic and returns a final reply
     user_text: str,
     context: Optional[Dict[str, Any]] = None,
     *,
@@ -244,13 +307,22 @@ def generate_tool_call_reply(
 ) -> str:
     """Generic agent loop: the model may call one or more tools, and we continue until it replies naturally."""
     context = context or {}
+
+    if os.environ.get("KEI_AGENT_BACKEND", "legacy").lower() == "langgraph":
+        try:
+            from langgraph_agent import run_langgraph_agent
+
+            return run_langgraph_agent(user_text, context, model=model)
+        except Exception as exc:
+            logging.warning("LangGraph agent failed; using legacy agent loop: %s", exc)
+
     messages = [
         {"role": "system", "content": build_system_prompt()},
         {"role": "user", "content": build_user_prompt(user_text, context)},
     ]
 
     try:
-        for _ in range(5):
+        for _ in range(5): #max 5 tool call loops to avoid infinite loops
             data = llm_chat(messages, tools=TOOLS, model=model, timeout=timeout)
             tool_calls = _extract_tool_calls(data)
             if not tool_calls:
@@ -290,7 +362,7 @@ def generate_tool_call_reply(
         return generate_plain_text_reply(user_text, context, model=model, timeout=timeout)
 
 
-def generate_plain_text_reply(
+def generate_plain_text_reply(#function that handles a simple text reply without tool calls
     user_text: str,
     context: Optional[Dict[str, Any]] = None,
     *,
@@ -366,7 +438,7 @@ def generate_with_ollama(prompt: str, model: str = "llama3", timeout: float = 3.
     return None
 
 
-def generate_conversation_reply(
+def generate_conversation_reply(#function that generates a conversation reply, handling tool calls and fallback
     user_text: str,
     context: Optional[Dict[str, Any]] = None,
     *,
@@ -468,7 +540,6 @@ def generate_openrouter_bilingual_reply(
         logging.exception("generate_openrouter_bilingual_reply failed")
         return None
 
-
 __all__ = [
     "DEFAULT_MODEL",
     "build_system_prompt",
@@ -480,4 +551,5 @@ __all__ = [
     "generate_openrouter_bilingual_reply",
     "get_template_response",
     "llm_chat",
+    "debug_tool_call_probe",
 ]

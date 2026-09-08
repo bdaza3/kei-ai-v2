@@ -3,3 +3,6 @@ openai-whisper
 requests
 psycopg[binary]>=3.2
 pgvector>=0.3
+python-dotenv
+langgraph>=1.2,<2
+langchain-openai>=1.6,<2
