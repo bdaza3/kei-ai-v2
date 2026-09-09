@@ -153,6 +153,24 @@ button:active {
     white-space: pre-wrap;
 }
 
+.trace-toggle {
+    color: #526070;
+    font-size: 14px;
+}
+
+.graph-trace {
+    margin-top: 12px;
+    padding: 12px;
+    max-height: 360px;
+    overflow: auto;
+    background: #18212b;
+    color: #c9f0dc;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+}
+
 
 canvas {
     border: 2px solid #ccc;

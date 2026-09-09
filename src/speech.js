@@ -3,6 +3,8 @@ const chatInput = document.getElementById("chatInput");
 const sendBtn = document.getElementById("sendBtn");
 const speechOutput = document.getElementById("speechOutput");
 const llmOutput = document.getElementById("llmOutput");
+const debugTrace = document.getElementById("debugTrace");
+const graphTrace = document.getElementById("graphTrace");
 
 const CHAT_URL = "http://localhost:5000/chat";
 
@@ -11,12 +13,13 @@ async function askKei(text) {
     const response = await fetch(CHAT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, debug_trace: Boolean(debugTrace && debugTrace.checked) }),
     });
 
     const data = await response.json();
     if (!response.ok) {
-      const message = data && data.error ? data.error : "LLM request failed";
+      const detail = data && data.detail ? ` ${data.detail}` : "";
+      const message = data && data.error ? `${data.error}${detail}` : "LLM request failed";
       return { error: message };
     }
 
@@ -24,6 +27,7 @@ async function askKei(text) {
       return {
         japanese: typeof data.japanese === "string" ? data.japanese.trim() : "",
         english: typeof data.english === "string" ? data.english.trim() : "",
+        trace: data.trace || null,
       };
     }
 
@@ -68,6 +72,13 @@ async function submitChat() {
     if (llmOutput) {
       llmOutput.textContent = `Kei: ${displayText}`;
       llmOutput.style.color = "#1f3c88";
+    }
+
+    if (graphTrace) {
+      graphTrace.hidden = !result.trace;
+      graphTrace.textContent = result.trace
+        ? JSON.stringify(result.trace, null, 2)
+        : "";
     }
 
     if (speechOutput) {

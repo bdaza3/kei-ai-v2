@@ -12,7 +12,12 @@ import hashlib
 import threading
 import time
 
-from ai_engine import generate_tool_call_reply, generate_plain_text_reply, _normalize_openrouter_model
+from ai_engine import (
+    generate_langgraph_trace_reply,
+    generate_tool_call_reply,
+    generate_plain_text_reply,
+    _normalize_openrouter_model,
+)
 from tts import get_qwen_japanese_tts, get_windows_sapi_tts
 
 settings.configure(
@@ -82,7 +87,7 @@ _load_env_file(PROJECT_ROOT / ".env")
 def _resolve_openrouter_settings() -> tuple[str, str]:
     _load_env_file(PROJECT_ROOT / ".env")
     api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("GEMMA3_4B_API_KEY") or ""
-    model_name = os.environ.get("OPENROUTER_MODEL") or "google/gemma-3-4b-it:free"
+    model_name = os.environ.get("OPENROUTER_MODEL") or "google/gemma-3-4b-it"
     return api_key, _normalize_openrouter_model(model_name)
 
 
@@ -246,11 +251,13 @@ def chat(request):
         response = JsonResponse({})
     elif request.method == "POST":
         text = ""
+        debug_trace = False
         try:
             if request.body:
                 payload = json.loads(request.body.decode("utf-8"))
                 if isinstance(payload, dict):
                     text = str(payload.get("text") or "").strip()
+                    debug_trace = bool(payload.get("debug_trace"))
         except Exception:
             text = ""
 
@@ -272,19 +279,56 @@ def chat(request):
                     status=503,
                 )
             else:
-                reply_text = generate_tool_call_reply(
-                    text,
-                    context={"source": "web_text_chat"},
-                    model=model_name,
-                    timeout=timeout,
-                )
+                try:
+                    trace = None
+                    if debug_trace and os.environ.get("KEI_AGENT_BACKEND", "legacy").lower() == "langgraph":
+                        result = generate_langgraph_trace_reply(
+                            text,
+                            context={"source": "web_text_chat"},
+                            model=model_name,
+                        )
+                        reply_text = str(result.get("response") or "")
+                        trace = {"events": result.get("trace", []), "models": result.get("models", {})}
+                    else:
+                        reply_text = generate_tool_call_reply(
+                            text,
+                            context={"source": "web_text_chat"},
+                            model=model_name,
+                            timeout=timeout,
+                        )
+                except Exception as exc:
+                    logging.exception("Chat model request failed")
+                    role_models = {
+                        "supervisor": os.environ.get("KEI_SUPERVISOR_MODEL", "unset"),
+                        "productivity": os.environ.get("KEI_PRODUCTIVITY_MODEL", "unset"),
+                        "general": os.environ.get("KEI_GENERAL_MODEL", "unset"),
+                    }
+                    response = JsonResponse(
+                        {
+                            "error": (
+                                "LangGraph model request failed. Check the OpenRouter account's access or credits "
+                                "for the configured role model."
+                            ),
+                            "model": model_name,
+                            "role_models": role_models,
+                            "detail": str(exc)[:300],
+                        },
+                        status=502,
+                    )
+                    response["Access-Control-Allow-Origin"] = "*"
+                    response["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+                    response["Access-Control-Allow-Headers"] = "Content-Type"
+                    return response
 
                 if reply_text:
-                    response = JsonResponse({
+                    body = {
                         "japanese": "",
                         "english": reply_text,
                         "model": model_name,
-                    })
+                    }
+                    if trace is not None:
+                        body["trace"] = trace
+                    response = JsonResponse(body)
                 else:
                     response = JsonResponse(
                         {

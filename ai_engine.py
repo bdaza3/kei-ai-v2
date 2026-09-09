@@ -24,7 +24,7 @@ from tools import TOOL_SCHEMAS, execute_tool
 
 TOOLS = TOOL_SCHEMAS
 
-DEFAULT_MODEL = "google/gemma-3-4b-it:free"
+DEFAULT_MODEL = "google/gemma-3-4b-it"
 OPENROUTER_URL = "https://api.openrouter.ai/v1/chat/completions"
 
 
@@ -41,11 +41,12 @@ def _normalize_openrouter_model(model_name: Optional[str]) -> str:
         return DEFAULT_MODEL
 
     aliases = {
+        "google/gemma-3-4b-it:free": "google/gemma-3-4b-it",
         "gemma3-4b": DEFAULT_MODEL,
         "gemma-3-4b": DEFAULT_MODEL,
         "gemma3": DEFAULT_MODEL,
-        "gemma3-12b": "google/gemma-3-12b-it:free",
-        "gemma-3-12b": "google/gemma-3-12b-it:free",
+        "gemma3-12b": "google/gemma-3-12b-it",
+        "gemma-3-12b": "google/gemma-3-12b-it",
     }
     lowered = raw.lower()
     return aliases.get(lowered, raw)
@@ -311,7 +312,12 @@ def generate_tool_call_reply(#function that handles tool-calling logic and retur
         try:
             from langgraph_agent import run_langgraph_agent
 
-            return run_langgraph_agent(user_text, context, model=model)
+            graph_model = model
+            if graph_model and _normalize_openrouter_model(graph_model) == _normalize_openrouter_model(
+                os.environ.get("OPENROUTER_MODEL")
+            ):
+                graph_model = None
+            return run_langgraph_agent(user_text, context, model=graph_model)
         except Exception as exc:
             logging.warning("LangGraph agent failed; using legacy agent loop: %s", exc)
 
@@ -353,12 +359,30 @@ def generate_tool_call_reply(#function that handles tool-calling logic and retur
             messages.extend(tool_messages)
 
         return get_template_response("conversation", context)
+
     except RuntimeError as exc:
         logging.warning("Tool-calling reply failed due to rate limit: %s", exc)
         return get_template_response("conversation", context)
     except Exception as exc:
         logging.warning("Tool-calling reply failed: %s", exc)
         return generate_plain_text_reply(user_text, context, model=model, timeout=timeout)
+
+
+def generate_langgraph_trace_reply(
+    user_text: str,
+    context: Optional[Dict[str, Any]] = None,
+    *,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run the LangGraph backend and return its response plus execution trace."""
+    from langgraph_agent import run_langgraph_agent_trace
+
+    graph_model = model
+    if graph_model and _normalize_openrouter_model(graph_model) == _normalize_openrouter_model(
+        os.environ.get("OPENROUTER_MODEL")
+    ):
+        graph_model = None
+    return run_langgraph_agent_trace(user_text, context, model=graph_model)
 
 
 def generate_plain_text_reply(#function that handles a simple text reply without tool calls

@@ -26,11 +26,13 @@
         <textarea id="chatInput" rows="4" style="width:100%; box-sizing:border-box; resize:vertical;" placeholder="Ask Kei anything..."></textarea>
         <div style="margin-top:12px; display:flex; gap:10px; align-items:center;">
           <button type="submit" id="sendBtn">Send</button>
+          <label class="trace-toggle"><input type="checkbox" id="debugTrace"> Show graph trace</label>
         </div>
       </form>
 
       <div id="speechOutput" style="margin-top:16px;">Voice input is temporarily disabled. Type a message below to chat with Kei.</div>
       <div id="llmOutput" aria-live="polite" style="margin-top:12px; white-space:pre-wrap;"></div>
+      <pre id="graphTrace" class="graph-trace" aria-live="polite" hidden></pre>
     </div>
 
     <!-- <div id="avatar-area" style="position:fixed; right:18px; top:120px; width:360px; height:480px; pointer-events:auto;">

@@ -17,7 +17,7 @@ import json
 from typing import Annotated, Literal, TypedDict
 
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
@@ -27,7 +27,7 @@ from tools import TOOL_FUNCTIONS, TOOL_SCHEMAS
 
 load_dotenv()
 
-DEFAULT_MODEL = "google/gemma-3-4b-it:free"
+DEFAULT_MODEL = "google/gemma-3-4b-it"
 MAX_GRAPH_STEPS = 12
 SupervisorRoute = Literal["productivity", "general"]
 
@@ -251,10 +251,15 @@ def run_langgraph_agent(
     model: str | None = None,
 ) -> str:
     """Run one bounded LangGraph request and return the final assistant text."""
-    if not user_text.strip():
-        raise ValueError("user_text must not be empty")
+    return run_langgraph_agent_trace(user_text, context, model=model)["response"]
 
-    initial: AgentState = {
+
+def _initial_state(
+    user_text: str,
+    context: dict[str, object] | None,
+    model: str | None,
+) -> AgentState:
+    return {
         "user_text": user_text,
         "context": context or {},
         "model_name": model,
@@ -268,14 +273,73 @@ def run_langgraph_agent(
             )
         ],
     }
-    result = get_agent_graph().invoke(
+
+
+def _trace_message(message: BaseMessage) -> dict[str, object] | None:
+    if isinstance(message, AIMessage) and message.tool_calls:
+        return {
+            "type": "tool_call",
+            "tools": [
+                {"name": call.get("name"), "arguments": call.get("args", {})}
+                for call in message.tool_calls
+            ],
+        }
+    if isinstance(message, ToolMessage):
+        return {
+            "type": "tool_result",
+            "name": message.name,
+            "result": message.content,
+        }
+    return None
+
+
+def run_langgraph_agent_trace(
+    user_text: str,
+    context: dict[str, object] | None = None,
+    *,
+    model: str | None = None,
+) -> dict[str, object]:
+    """Run LangGraph and return the final response plus a safe execution trace."""
+    if not user_text.strip():
+        raise ValueError("user_text must not be empty")
+
+    messages: list[BaseMessage] = []
+    trace: list[dict[str, object]] = []
+    initial = _initial_state(user_text, context, model)
+    for update in get_agent_graph().stream(
         initial,
         config={"recursion_limit": int(os.environ.get("KEI_GRAPH_RECURSION_LIMIT", MAX_GRAPH_STEPS))},
-    )
-    messages = result.get("messages", [])
+        stream_mode="updates",
+    ):
+        for node, delta in update.items():
+            event: dict[str, object] = {"node": node}
+            if isinstance(delta, dict):
+                for field in ("route", "supervisor_decision"):
+                    if field in delta:
+                        event[field] = delta[field]
+                new_messages = delta.get("messages", [])
+                if isinstance(new_messages, list):
+                    messages.extend(new_messages)
+                    message_events = [
+                        message_event
+                        for message in new_messages
+                        if (message_event := _trace_message(message)) is not None
+                    ]
+                    if message_events:
+                        event["messages"] = message_events
+            trace.append(event)
+
     for message in reversed(messages):
         if isinstance(message, AIMessage) and isinstance(message.content, str) and message.content.strip():
-            return message.content.strip()
+            return {
+                "response": message.content.strip(),
+                "trace": trace,
+                "models": {
+                    "supervisor": os.environ.get("KEI_SUPERVISOR_MODEL"),
+                    "productivity": os.environ.get("KEI_PRODUCTIVITY_MODEL"),
+                    "general": os.environ.get("KEI_GENERAL_MODEL"),
+                },
+            }
     raise RuntimeError("LangGraph completed without a text response")
 
 
@@ -287,4 +351,5 @@ __all__ = [
     "get_agent_graph",
     "get_graph_mermaid",
     "run_langgraph_agent",
+    "run_langgraph_agent_trace",
 ]
