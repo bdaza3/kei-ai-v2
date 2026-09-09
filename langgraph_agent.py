@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import json
+from operator import add
 from typing import Annotated, Literal, TypedDict
 
 from dotenv import load_dotenv
@@ -29,7 +30,8 @@ load_dotenv()
 
 DEFAULT_MODEL = "google/gemma-3-4b-it"
 MAX_GRAPH_STEPS = 12
-SupervisorRoute = Literal["productivity", "general"]
+MAX_ITERATIONS = 6
+SupervisorRoute = Literal["productivity", "general", "finish"]
 
 SUPERVISOR_SYSTEM_PROMPT = """You are the executive manager of Kei's multi-agent productivity assistant team.
 Your sole responsibility is to orchestrate tasks by deciding which specialized
@@ -46,19 +48,28 @@ Rules:
 - Analyze the user's latest request and the conversation history.
 - For a multi-step task, choose the first necessary registered worker.
 - If a worker has just returned information, decide whether another registered worker is needed.
-- Choose exactly one registered worker name and output nothing else.
+- Choose exactly one registered worker name, or FINISH when the task is complete, and output nothing else.
 - Never perform the task yourself and never call tools.
 """
 
 
 class AgentState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], lambda left, right: left + right]
+    user_intent: str
+    selected_agent: SupervisorRoute
     route: Literal["productivity", "general"]
     user_text: str
     context: dict[str, object]
     model_name: str | None
     supervisor_model_name: str | None
     supervisor_decision: str
+    tool_calls: Annotated[list[dict[str, object]], add]
+    tool_results: Annotated[list[dict[str, object]], add]
+    iteration_count: int
+    task_complete: bool
+    final_response: str
+    errors: Annotated[list[str], add]
+    trace_events: Annotated[list[dict[str, object]], add]
 
 
 #function to build the list of available tools from the TOOL_FUNCTIONS and TOOL_SCHEMAS
@@ -128,23 +139,72 @@ def _parse_supervisor_route(content: object) -> SupervisorRoute | None:
         return "productivity"
     if candidate in {"general_agent", "general"}:
         return "general"
+    if candidate in {"finish", "end"}:
+        return "finish"
     return None
 
+
+def _trace_event(node: str, state: AgentState, **values: object) -> dict[str, object]:
+    return {
+        "node": node,
+        "iteration": state.get("iteration_count", 0),
+        **values,
+    }
+
 #function to handle the supervisor's decision and route the request to the appropriate specialist agent
-def _supervisor(state: AgentState) -> dict[str, str]:
+def _supervisor(state: AgentState) -> dict[str, object]:
     """Ask a separate model to choose the next registered worker."""
+    iteration = state.get("iteration_count", 0) + 1
+    if iteration > int(os.environ.get("KEI_GRAPH_MAX_ITERATIONS", MAX_ITERATIONS)):
+        message = "I stopped this request because the agent iteration limit was reached."
+        return {
+            "route": "finish",
+            "selected_agent": "finish",
+            "iteration_count": iteration,
+            "task_complete": True,
+            "final_response": message,
+            "supervisor_decision": "iteration_limit",
+            "errors": [message],
+            "trace_events": [_trace_event("supervisor", state, decision="finish", reason="iteration_limit", task_complete=True)],
+        }
+
     try:
         supervisor_model = state.get("supervisor_model_name") or os.environ.get("KEI_SUPERVISOR_MODEL")
         model = _model(supervisor_model).bind_tools([])
         response = model.invoke([SystemMessage(content=SUPERVISOR_SYSTEM_PROMPT), *state.get("messages", [])])
         route = _parse_supervisor_route(response.content)
         if route is not None:
-            return {"route": route, "supervisor_decision": response.content}
-    except Exception:
-        pass
+            if route == "finish":
+                return {
+                    "route": "finish",
+                    "selected_agent": "finish",
+                    "iteration_count": iteration,
+                    "task_complete": True,
+                    "final_response": "The requested task is complete.",
+                    "supervisor_decision": response.content,
+                    "trace_events": [_trace_event("supervisor", state, decision="finish", reason="model_decision", task_complete=True)],
+                }
+            return {
+                "route": route,
+                "selected_agent": route,
+                "iteration_count": iteration,
+                "user_intent": state.get("user_text", ""),
+                "supervisor_decision": response.content,
+                "trace_events": [_trace_event("supervisor", state, decision=f"{route}_agent", reason="model_decision", task_complete=False)],
+            }
+    except Exception as exc:
+        fallback_reason = f"supervisor_error:{type(exc).__name__}"
 
     fallback = _fallback_route_request(state)
-    return {"route": fallback, "supervisor_decision": f"fallback:{fallback}"}
+    return {
+        "route": fallback,
+        "selected_agent": fallback,
+        "iteration_count": iteration,
+        "user_intent": state.get("user_text", ""),
+        "supervisor_decision": f"fallback:{fallback}",
+        "errors": [fallback_reason if "fallback_reason" in locals() else "supervisor_invalid_decision"],
+        "trace_events": [_trace_event("supervisor", state, decision=f"{fallback}_agent", reason="deterministic_fallback", task_complete=False)],
+    }
 
 #function to generate the system prompt for the specialist agent based on the route
 def _specialist_system(route: str) -> str:
@@ -169,7 +229,20 @@ def _invoke_specialist(state: AgentState, route: Literal["productivity", "genera
     configured_model = state.get("model_name") or os.environ.get(f"KEI_{route.upper()}_MODEL")
     model = _model(configured_model).bind_tools(TOOLS)
     response = model.invoke([SystemMessage(content=_specialist_system(route)), *messages])
-    return {"messages": [response]}
+    requested_tools = [
+        {"name": call.get("name", "unknown"), "arguments": call.get("args", {})}
+        for call in response.tool_calls
+    ]
+    complete = not bool(requested_tools)
+    update: dict[str, object] = {
+        "messages": [response],
+        "tool_calls": requested_tools,
+        "task_complete": complete,
+        "trace_events": [_trace_event(route + "_agent", state, decision="tool_call" if requested_tools else "END", tool_calls=requested_tools, task_complete=complete)],
+    }
+    if complete and isinstance(response.content, str) and response.content.strip():
+        update["final_response"] = response.content.strip()
+    return update  # type: ignore[return-value]
 
 
 def _productivity_agent(state: AgentState) -> dict[str, list[BaseMessage]]:
@@ -181,7 +254,51 @@ def _general_agent(state: AgentState) -> dict[str, list[BaseMessage]]:
 
 
 def _route_after_request(state: AgentState) -> str:
+    if state.get("task_complete") or state.get("selected_agent") == "finish":
+        return END
     return state.get("route", "general")
+
+
+def _tools(state: AgentState) -> dict[str, object]:
+    """Execute allowlisted tools and record results/errors in explicit state."""
+    try:
+        result = ToolNode(TOOLS, handle_tool_errors=True).invoke(state)
+        tool_messages = result.get("messages", []) if isinstance(result, dict) else []
+        tool_results = [
+            {"name": message.name, "result": message.content}
+            for message in tool_messages
+            if isinstance(message, ToolMessage)
+        ]
+        tool_errors = [
+            str(message.content)
+            for message in tool_messages
+            if isinstance(message, ToolMessage)
+            and isinstance(message.content, str)
+            and message.content.lower().startswith("error")
+        ]
+        if tool_errors:
+            error = f"tool_error:{tool_errors[0]}"
+            return {
+                "messages": tool_messages,
+                "tool_results": tool_results,
+                "errors": [error],
+                "task_complete": True,
+                "final_response": "I could not complete that because a required tool failed.",
+                "trace_events": [_trace_event("tools", state, decision="END", reason="tool_error", error=error, task_complete=True)],
+            }
+        return {
+            "messages": tool_messages,
+            "tool_results": tool_results,
+            "trace_events": [_trace_event("tools", state, decision="return_to_supervisor", tool_results=tool_results, task_complete=False)],
+        }
+    except Exception as exc:
+        error = f"tool_error:{type(exc).__name__}:{exc}"
+        return {
+            "errors": [error],
+            "trace_events": [_trace_event("tools", state, decision="END", reason="tool_error", error=error, task_complete=True)],
+            "task_complete": True,
+            "final_response": "I could not complete that because a required tool failed.",
+        }
 
 
 def build_agent_graph():
@@ -190,13 +307,13 @@ def build_agent_graph():
     graph.add_node("supervisor", _supervisor)
     graph.add_node("productivity_agent", _productivity_agent)
     graph.add_node("general_agent", _general_agent)
-    graph.add_node("tools", ToolNode(TOOLS, handle_tool_errors=True))
+    graph.add_node("tools", _tools)
 
     graph.add_edge(START, "supervisor")
     graph.add_conditional_edges(
         "supervisor",
         _route_after_request,
-        {"productivity": "productivity_agent", "general": "general_agent"},
+        {"productivity": "productivity_agent", "general": "general_agent", END: END},
     )
 
     for agent_name in ("productivity_agent", "general_agent"):
@@ -221,6 +338,19 @@ def describe_graph() -> dict[str, object]:
         "nodes": sorted(graph.nodes),
         "edges": [{"from": edge.source, "to": edge.target} for edge in graph.edges],
         "tools": [schema["function"]["name"] for schema in TOOL_SCHEMAS],
+        "state_fields": [
+            "messages",
+            "user_intent",
+            "selected_agent",
+            "tool_calls",
+            "tool_results",
+            "iteration_count",
+            "task_complete",
+            "final_response",
+            "errors",
+            "trace_events",
+        ],
+        "max_iterations": int(os.environ.get("KEI_GRAPH_MAX_ITERATIONS", MAX_ITERATIONS)),
         "decision_loop": (
             "supervisor selects a registered specialist; the specialist asks the worker LLM; "
             "tools_condition sends tool calls to tools; tool results return to the supervisor; "
@@ -264,6 +394,13 @@ def _initial_state(
         "context": context or {},
         "model_name": model,
         "supervisor_model_name": os.environ.get("KEI_SUPERVISOR_MODEL"),
+        "user_intent": user_text,
+        "iteration_count": 0,
+        "task_complete": False,
+        "tool_calls": [],
+        "tool_results": [],
+        "errors": [],
+        "trace_events": [],
         "messages": [
             HumanMessage(
                 content=(
@@ -305,6 +442,8 @@ def run_langgraph_agent_trace(
 
     messages: list[BaseMessage] = []
     trace: list[dict[str, object]] = []
+    final_response = ""
+    errors: list[str] = []
     initial = _initial_state(user_text, context, model)
     for update in get_agent_graph().stream(
         initial,
@@ -314,9 +453,26 @@ def run_langgraph_agent_trace(
         for node, delta in update.items():
             event: dict[str, object] = {"node": node}
             if isinstance(delta, dict):
-                for field in ("route", "supervisor_decision"):
+                for field in (
+                    "route",
+                    "selected_agent",
+                    "supervisor_decision",
+                    "iteration_count",
+                    "task_complete",
+                    "final_response",
+                    "tool_calls",
+                    "tool_results",
+                    "errors",
+                ):
                     if field in delta:
                         event[field] = delta[field]
+                if isinstance(delta.get("trace_events"), list):
+                    event["events"] = delta["trace_events"]
+                    trace.extend(delta["trace_events"])
+                if isinstance(delta.get("final_response"), str):
+                    final_response = delta["final_response"]
+                if isinstance(delta.get("errors"), list):
+                    errors.extend(str(error) for error in delta["errors"])
                 new_messages = delta.get("messages", [])
                 if isinstance(new_messages, list):
                     messages.extend(new_messages)
@@ -327,19 +483,25 @@ def run_langgraph_agent_trace(
                     ]
                     if message_events:
                         event["messages"] = message_events
-            trace.append(event)
+            if not (isinstance(delta, dict) and delta.get("trace_events")):
+                trace.append(event)
 
-    for message in reversed(messages):
-        if isinstance(message, AIMessage) and isinstance(message.content, str) and message.content.strip():
-            return {
-                "response": message.content.strip(),
-                "trace": trace,
-                "models": {
-                    "supervisor": os.environ.get("KEI_SUPERVISOR_MODEL"),
-                    "productivity": os.environ.get("KEI_PRODUCTIVITY_MODEL"),
-                    "general": os.environ.get("KEI_GENERAL_MODEL"),
-                },
-            }
+    if not final_response:
+        for message in reversed(messages):
+            if isinstance(message, AIMessage) and isinstance(message.content, str) and message.content.strip():
+                final_response = message.content.strip()
+                break
+    if final_response:
+        return {
+            "response": final_response,
+            "trace": trace,
+            "errors": errors,
+            "models": {
+                "supervisor": os.environ.get("KEI_SUPERVISOR_MODEL"),
+                "productivity": os.environ.get("KEI_PRODUCTIVITY_MODEL"),
+                "general": os.environ.get("KEI_GENERAL_MODEL"),
+            },
+        }
     raise RuntimeError("LangGraph completed without a text response")
 
 

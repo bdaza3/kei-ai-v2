@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 import langgraph_agent
 
@@ -88,16 +88,42 @@ class LangGraphAgentTests(unittest.TestCase):
     def test_trace_reports_tool_call_and_return_to_supervisor(self):
         with patch.object(langgraph_agent, "_model", return_value=_ToolCallSequenceModel()):
             result = langgraph_agent.run_langgraph_agent_trace("check the current time")
-        tool_events = [
-            message
-            for event in result["trace"]
-            for message in event.get("messages", [])
-            if message.get("type") == "tool_call"
-        ]
+        tool_events = [event for event in result["trace"] if event.get("decision") == "tool_call"]
         nodes = [event["node"] for event in result["trace"]]
-        self.assertEqual(tool_events[0]["tools"][0]["name"], "get_current_time")
+        self.assertEqual(tool_events[0]["tool_calls"][0]["name"], "get_current_time")
         self.assertIn("tools", nodes)
         self.assertGreaterEqual(nodes.count("supervisor"), 2)
+
+    def test_trace_has_explicit_state_metadata_and_end_decision(self):
+        with patch.object(langgraph_agent, "_model", return_value=_FakeModel()):
+            result = langgraph_agent.run_langgraph_agent_trace("hello")
+        self.assertTrue(result["trace"])
+        final_event = result["trace"][-1]
+        self.assertEqual(final_event["node"], "general_agent")
+        self.assertEqual(final_event["decision"], "END")
+        self.assertTrue(final_event["task_complete"])
+
+    def test_supervisor_enforces_iteration_limit(self):
+        with patch.dict("os.environ", {"KEI_GRAPH_MAX_ITERATIONS": "0"}, clear=False):
+            result = langgraph_agent._supervisor({"user_text": "hello", "iteration_count": 0})
+        self.assertEqual(result["selected_agent"], "finish")
+        self.assertTrue(result["task_complete"])
+        self.assertEqual(result["supervisor_decision"], "iteration_limit")
+
+    def test_tool_errors_are_structured_and_complete_the_task(self):
+        state = {
+            "messages": [
+                HumanMessage(content="test"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "missing_tool", "args": {}, "id": "bad-1", "type": "tool_call"}],
+                ),
+            ],
+            "iteration_count": 1,
+        }
+        result = langgraph_agent._tools(state)
+        self.assertTrue(result["task_complete"])
+        self.assertEqual(result["trace_events"][0]["reason"], "tool_error")
 
 
 if __name__ == "__main__":
