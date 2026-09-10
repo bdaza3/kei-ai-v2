@@ -4,6 +4,7 @@ from unittest.mock import patch
 from langchain_core.messages import AIMessage, HumanMessage
 
 import langgraph_agent
+import tools
 
 
 class _FakeBoundModel:
@@ -57,7 +58,18 @@ class LangGraphAgentTests(unittest.TestCase):
         self.assertIn("tools", description["nodes"])
         self.assertEqual(
             description["tools"],
-            ["get_active_window", "get_activity_snapshot", "get_current_time"],
+            [
+                "get_active_window",
+                "get_activity_snapshot",
+                "get_current_time",
+                "get_focus_status",
+                "start_focus_session",
+                "stop_focus_session",
+                "get_focus_session",
+                "add_focus_task",
+                "list_focus_tasks",
+                "complete_focus_task",
+            ],
         )
 
     def test_graph_mermaid_contains_tool_loop(self):
@@ -124,6 +136,32 @@ class LangGraphAgentTests(unittest.TestCase):
         result = langgraph_agent._tools(state)
         self.assertTrue(result["task_complete"])
         self.assertEqual(result["trace_events"][0]["reason"], "tool_error")
+
+    def test_focus_session_tool_validates_and_tracks_state(self):
+        stopped = tools.stop_focus_session()
+        self.assertEqual(stopped["state"], "idle")
+        started = tools.start_focus_session(minutes=1, break_minutes=5)
+        self.assertEqual(started["state"], "work")
+        self.assertEqual(started["work_minutes"], 1)
+        self.assertEqual(tools.get_focus_session()["state"], "work")
+        tools.stop_focus_session()
+        with self.assertRaises(ValueError):
+            tools.start_focus_session(minutes=0)
+
+    def test_focus_task_tool_persists_and_completes_tasks(self):
+        original_path = tools._TASKS_PATH
+        tools._TASKS_PATH = f"{self._testMethodName}.json"
+        try:
+            task = tools.add_focus_task("Review the API design", "high")
+            self.assertEqual(tools.list_focus_tasks()[0]["title"], "Review the API design")
+            completed = tools.complete_focus_task(task["id"])
+            self.assertTrue(completed["completed"])
+            self.assertEqual(tools.list_focus_tasks(), [])
+        finally:
+            import os
+            if os.path.exists(tools._TASKS_PATH):
+                os.remove(tools._TASKS_PATH)
+            tools._TASKS_PATH = original_path
 
 
 if __name__ == "__main__":

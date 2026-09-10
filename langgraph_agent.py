@@ -41,6 +41,11 @@ Available worker agents:
 1. 'productivity_agent': Focus, desktop activity, Pomodoro, and concrete work progress.
 2. 'general_agent': General conversation and requests that do not need a specialist.
 
+Available productivity tools include read-only activity/focus status, Pomodoro
+start/stop/status, and a persisted focus-task list. Use action tools only when
+the user explicitly asks for that action. Use read-only tools when the answer
+depends on live desktop or focus state.
+
 Future worker agents will include calendar_agent, email_agent, and file_agent.
 Do not select a future worker until it is registered in the graph.
 
@@ -218,7 +223,9 @@ def _specialist_system(route: str) -> str:
 
     return (
         f"{role} You are one node in a LangGraph agent. "
-        "Use tools only when they provide necessary runtime facts. "
+        "Use no tool for ordinary conversation, explanations, or stable general knowledge. "
+        "Use tools only when they provide necessary runtime facts or perform an explicit user-requested action. "
+        "Never start, stop, save, or complete anything based only on an implied intention. "
         "Never claim a tool action happened unless a tool result confirms it. "
         "Keep the final answer concise and clear."
     )
