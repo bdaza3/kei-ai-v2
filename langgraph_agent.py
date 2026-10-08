@@ -180,14 +180,21 @@ def _supervisor(state: AgentState) -> dict[str, object]:
         route = _parse_supervisor_route(response.content)
         if route is not None:
             if route == "finish":
+                # The supervisor only chooses workers; it cannot produce a user
+                # response. After a tool call, send the result back to the worker
+                # that requested it so the worker can explain it to the user.
+                previous_worker = state.get("selected_agent")
+                route = (
+                    previous_worker
+                    if previous_worker in {"productivity", "general"}
+                    else _fallback_route_request(state)
+                )
                 return {
-                    "route": "finish",
-                    "selected_agent": "finish",
+                    "route": route,
+                    "selected_agent": route,
                     "iteration_count": iteration,
-                    "task_complete": True,
-                    "final_response": "The requested task is complete.",
                     "supervisor_decision": response.content,
-                    "trace_events": [_trace_event("supervisor", state, decision="finish", reason="model_decision", task_complete=True)],
+                    "trace_events": [_trace_event("supervisor", state, decision=f"{route}_agent", reason="finish_redirected_to_worker", task_complete=False)],
                 }
             return {
                 "route": route,
@@ -280,8 +287,13 @@ def _tools(state: AgentState) -> dict[str, object]:
             str(message.content)
             for message in tool_messages
             if isinstance(message, ToolMessage)
-            and isinstance(message.content, str)
-            and message.content.lower().startswith("error")
+            and (
+                getattr(message, "status", None) == "error"
+                or (
+                    isinstance(message.content, str)
+                    and message.content.lower().startswith("error")
+                )
+            )
         ]
         if tool_errors:
             error = f"tool_error:{tool_errors[0]}"

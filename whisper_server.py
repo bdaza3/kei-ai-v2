@@ -305,10 +305,8 @@ def chat(request):
                     }
                     response = JsonResponse(
                         {
-                            "error": (
-                                "LangGraph model request failed. Check the OpenRouter account's access or credits "
-                                "for the configured role model."
-                            ),
+                            "error": "The chat agent could not complete this request. Check the backend and model configuration, then try again.",
+                            "backend": os.environ.get("KEI_AGENT_BACKEND", "legacy").lower(),
                             "model": model_name,
                             "role_models": role_models,
                             "detail": str(exc)[:300],

@@ -309,17 +309,16 @@ def generate_tool_call_reply(#function that handles tool-calling logic and retur
     context = context or {}
 
     if os.environ.get("KEI_AGENT_BACKEND", "legacy").lower() == "langgraph":
-        try:
-            from langgraph_agent import run_langgraph_agent
+        from langgraph_agent import run_langgraph_agent
 
-            graph_model = model
-            if graph_model and _normalize_openrouter_model(graph_model) == _normalize_openrouter_model(
-                os.environ.get("OPENROUTER_MODEL")
-            ):
-                graph_model = None
-            return run_langgraph_agent(user_text, context, model=graph_model)
-        except Exception as exc:
-            logging.warning("LangGraph agent failed; using legacy agent loop: %s", exc)
+        graph_model = model
+        if graph_model and _normalize_openrouter_model(graph_model) == _normalize_openrouter_model(
+            os.environ.get("OPENROUTER_MODEL")
+        ):
+            graph_model = None
+        # Keep backend selection predictable. A broken LangGraph request should
+        # be reported to the caller, not silently re-run through another agent.
+        return run_langgraph_agent(user_text, context, model=graph_model)
 
     messages = [
         {"role": "system", "content": build_system_prompt()},
