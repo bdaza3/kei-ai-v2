@@ -114,6 +114,14 @@ def _memory_block(user_text: str) -> str:
         return str(bundle)
 
 
+def _remember_agent_turn(user_text: str, assistant_text: str, context: Optional[Dict[str, Any]]) -> None:
+    """Persist a completed assistant turn without making memory a runtime dependency."""
+    try:
+        get_memory().remember_turn(user_text, assistant_text, context or {})
+    except Exception:
+        logging.warning("Could not persist conversation memory", exc_info=True)
+
+
 def build_system_prompt() -> str:
     return (
         f"{_persona_block()}\n\n"
@@ -318,7 +326,9 @@ def generate_tool_call_reply(#function that handles tool-calling logic and retur
             graph_model = None
         # Keep backend selection predictable. A broken LangGraph request should
         # be reported to the caller, not silently re-run through another agent.
-        return run_langgraph_agent(user_text, context, model=graph_model)
+        reply = run_langgraph_agent(user_text, context, model=graph_model)
+        _remember_agent_turn(user_text, reply, context)
+        return reply
 
     messages = [
         {"role": "system", "content": build_system_prompt()},
@@ -381,7 +391,11 @@ def generate_langgraph_trace_reply(
         os.environ.get("OPENROUTER_MODEL")
     ):
         graph_model = None
-    return run_langgraph_agent_trace(user_text, context, model=graph_model)
+    result = run_langgraph_agent_trace(user_text, context, model=graph_model)
+    reply = str(result.get("response") or "").strip()
+    if reply:
+        _remember_agent_turn(user_text, reply, context)
+    return result
 
 
 def generate_plain_text_reply(#function that handles a simple text reply without tool calls
@@ -470,9 +484,13 @@ def generate_conversation_reply(#function that generates a conversation reply, h
     context = context or {}
     memory = get_memory()
     fallback = get_template_response("conversation", context)
+    langgraph_enabled = os.environ.get("KEI_AGENT_BACKEND", "legacy").lower() == "langgraph"
     try:
         reply = generate_tool_call_reply(user_text, context, timeout=timeout)
-        memory.remember_turn(user_text, reply, context)
+        # The LangGraph runner stores its own successful turns so direct API
+        # callers and this wrapper share the same memory behavior.
+        if not langgraph_enabled:
+            memory.remember_turn(user_text, reply, context)
         return reply
     except Exception:
         logging.exception("generate_conversation_reply failed")
