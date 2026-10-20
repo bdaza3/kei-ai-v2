@@ -59,16 +59,25 @@ class PomodoroTimer:
             return []
 
         if self.state == "work":
+            break_started_at = self.ends_at
             self.completed_work_sessions += 1
             self.state = "break"
-            self.started_at = now
-            self.ends_at = now + (self.break_minutes * 60)
-            return [
-                TimerEvent(
-                    trigger="pomodoro_break",
-                    context=self.snapshot(now),
-                )
+            self.started_at = break_started_at
+            self.ends_at = break_started_at + (self.break_minutes * 60)
+            events = [
+                TimerEvent(trigger="pomodoro_break", context=self.snapshot(break_started_at))
             ]
+            if now < self.ends_at:
+                return events
+
+            # Status may not be checked until after both blocks have elapsed.
+            # Keep the wall-clock schedule accurate instead of starting a late
+            # break when the process polls for status.
+            self.state = "idle"
+            self.started_at = None
+            self.ends_at = None
+            events.append(TimerEvent(trigger="pomodoro_completed", context=self.snapshot(now)))
+            return events
 
         self.state = "idle"
         self.started_at = None

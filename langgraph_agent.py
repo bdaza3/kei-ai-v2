@@ -43,9 +43,10 @@ Available worker agents:
 2. 'general_agent': General conversation and requests that do not need a specialist.
 
 Available productivity tools include read-only activity/focus status, Pomodoro
-start/stop/status, and a persisted focus-task list. Use action tools only when
-the user explicitly asks for that action. Use read-only tools when the answer
-depends on live desktop or focus state.
+start/resume/stop/status, and persisted focus tasks with active/paused/completed
+states and progress notes. Use action tools only when the user explicitly asks
+for that action. Use read-only tools when the answer depends on live desktop or
+focus state.
 
 Future worker agents will include calendar_agent, email_agent, and file_agent.
 Do not select a future worker until it is registered in the graph.
@@ -225,7 +226,14 @@ def _specialist_system(route: str, memory_context: dict[str, object] | None = No
     if route == "productivity":
         role = (
             "You are Kei's productivity specialist. Help the user make concrete progress, "
-            "and use the active-window tool when current desktop context matters."
+            "and use the active-window tool when current desktop context matters. "
+            "When asked what to work on, use get_next_focus_task. Start a task only "
+            "when the user chooses it or asks to begin focusing. Start a Pomodoro "
+            "only when the user asks to focus or start a timer. When the user says "
+            "they are back or ready to continue, use resume_focus_session. Record "
+            "only progress the user reports, using the active task when clear; "
+            "if the task is unclear, ask before saving. Mark a task complete only "
+            "when the user says it is done."
         )
     else:
         role = "You are Kei's general conversation specialist. Answer directly and do not invent facts."

@@ -59,7 +59,11 @@ class LangGraphAgentTests(unittest.TestCase):
         self.assertEqual(
             description["tools"],
             [
+                "resume_focus_session",
                 "get_active_window",
+                "get_next_focus_task",
+                "start_focus_task",
+                "update_focus_task_progress",
                 "get_activity_snapshot",
                 "get_current_time",
                 "get_focus_status",
